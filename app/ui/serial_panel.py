@@ -13,11 +13,14 @@ from PySide6.QtWidgets import (
 )
 
 _BAUD_RATES = ["9600", "19200", "38400", "57600", "115200", "230400", "460800", "921600", "1000000"]
+_FONT_SIZES = ["8", "9", "10", "11", "12", "13", "14", "16", "18", "20", "24"]
+_DEFAULT_FONT_SIZE = "12"
 
 
 class SerialPanel(QWidget):
     connect_requested = Signal(str, int)
     disconnect_requested = Signal()
+    font_size_changed = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -37,6 +40,14 @@ class SerialPanel(QWidget):
         self._connect_btn = QPushButton("Connect")
         self._connect_btn.clicked.connect(self._on_connect_toggle)
 
+        font_combo = QComboBox()
+        font_combo.addItems(_FONT_SIZES)
+        font_combo.setCurrentText(_DEFAULT_FONT_SIZE)
+        font_combo.setFixedWidth(54)
+        font_combo.currentTextChanged.connect(
+            lambda text: self.font_size_changed.emit(int(text))
+        )
+
         layout.addWidget(QLabel("Port:"))
         layout.addWidget(self._port_combo)
         layout.addWidget(refresh_btn)
@@ -44,6 +55,9 @@ class SerialPanel(QWidget):
         layout.addWidget(self._baud_combo)
         layout.addWidget(self._connect_btn)
         layout.addStretch()
+        layout.addWidget(QLabel("Font:"))
+        layout.addWidget(font_combo)
+        layout.addWidget(QLabel("pt"))
 
         self._connected = False
         self._refresh_ports()

@@ -31,7 +31,11 @@ class SerialWorker(QThread):
                         buf += chunk
                         while b"\n" in buf:
                             line, buf = buf.split(b"\n", 1)
-                            self.new_line.emit(line.decode("utf-8", errors="replace"))
+                            # Strip \r so Windows-style \r\n endings don't cause
+                            # blank lines in the display.
+                            self.new_line.emit(
+                                line.rstrip(b"\r").decode("utf-8", errors="replace")
+                            )
         except serial.SerialException as exc:
             self.error_occurred.emit(str(exc))
 
