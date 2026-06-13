@@ -29,7 +29,7 @@ _PANE_STYLE = (
     "QPlainTextEdit {"
     "  background-color: #000000;"
     "  color: #cccccc;"
-    "  selection-background-color: #444444;"
+    "  selection-background-color: #1a5fa8;"
     "}"
 )
 
@@ -95,6 +95,9 @@ class MainWindow(QMainWindow):
         self._serial_panel.disconnect_requested.connect(self._on_disconnect)
         self._serial_panel.font_size_changed.connect(self._on_font_size_changed)
         self._filter_bar.filters_changed.connect(self._on_filters_changed)
+
+        self._raw_pane.selectionChanged.connect(self._on_raw_pane_selection_changed)
+        self._filtered_pane.selectionChanged.connect(self._on_filtered_pane_selection_changed)
 
     # ------------------------------------------------------------------
     # Serial lifecycle
@@ -174,6 +177,22 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # UI controls
     # ------------------------------------------------------------------
+
+    def _on_raw_pane_selection_changed(self):
+        cursor = self._filtered_pane.textCursor()
+        if cursor.hasSelection():
+            self._filtered_pane.blockSignals(True)
+            cursor.clearSelection()
+            self._filtered_pane.setTextCursor(cursor)
+            self._filtered_pane.blockSignals(False)
+
+    def _on_filtered_pane_selection_changed(self):
+        cursor = self._raw_pane.textCursor()
+        if cursor.hasSelection():
+            self._raw_pane.blockSignals(True)
+            cursor.clearSelection()
+            self._raw_pane.setTextCursor(cursor)
+            self._raw_pane.blockSignals(False)
 
     def _on_font_size_changed(self, size: int):
         for pane in (self._raw_pane, self._filtered_pane):
