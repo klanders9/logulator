@@ -1,0 +1,87 @@
+"""QSettings-backed persistent settings for logulator."""
+
+from typing import Optional
+
+from PySide6.QtCore import QByteArray, QSettings
+
+
+class AppSettings:
+    _ORG = "logulator"
+    _APP = "logulator"
+
+    _LEVEL_DEFAULTS = {
+        "err": "#ff5555",
+        "wrn": "#ffb86c",
+        "inf": "#50fa7b",
+        "dbg": "#888888",
+    }
+    _SYNTAX_DEFAULTS = {
+        "timestamp": "#666666",
+        "module": "#bd93f9",
+        "message": "#f8f8f2",
+    }
+
+    def __init__(self):
+        self._qs = QSettings(self._ORG, self._APP)
+
+    # --- Window geometry ---
+
+    def save_geometry(self, data: QByteArray) -> None:
+        self._qs.setValue("window/geometry", data)
+
+    def load_geometry(self) -> Optional[QByteArray]:
+        v = self._qs.value("window/geometry")
+        return v if isinstance(v, QByteArray) else None
+
+    def save_splitter(self, data: QByteArray) -> None:
+        self._qs.setValue("window/splitter", data)
+
+    def load_splitter(self) -> Optional[QByteArray]:
+        v = self._qs.value("window/splitter")
+        return v if isinstance(v, QByteArray) else None
+
+    # --- Sidebar ---
+
+    def sidebar_open(self) -> bool:
+        return self._qs.value("sidebar/open", False, type=bool)
+
+    def set_sidebar_open(self, val: bool) -> None:
+        self._qs.setValue("sidebar/open", val)
+
+    # --- Colorization ---
+
+    def color_enabled(self) -> bool:
+        return self._qs.value("color/enabled", True, type=bool)
+
+    def set_color_enabled(self, val: bool) -> None:
+        self._qs.setValue("color/enabled", val)
+
+    def color_mode(self) -> str:
+        v = self._qs.value("color/mode", "level")
+        return v if v in ("level", "syntax") else "level"
+
+    def set_color_mode(self, val: str) -> None:
+        self._qs.setValue("color/mode", val)
+
+    def color_apply_to(self) -> str:
+        v = self._qs.value("color/apply_to", "all")
+        return v if v in ("all", "raw", "filtered", "none") else "all"
+
+    def set_color_apply_to(self, val: str) -> None:
+        self._qs.setValue("color/apply_to", val)
+
+    def level_color(self, level: str) -> str:
+        return self._qs.value(
+            f"color/level_{level}", self._LEVEL_DEFAULTS.get(level, "#cccccc")
+        )
+
+    def set_level_color(self, level: str, color: str) -> None:
+        self._qs.setValue(f"color/level_{level}", color)
+
+    def syntax_color(self, field: str) -> str:
+        return self._qs.value(
+            f"color/syntax_{field}", self._SYNTAX_DEFAULTS.get(field, "#cccccc")
+        )
+
+    def set_syntax_color(self, field: str, color: str) -> None:
+        self._qs.setValue(f"color/syntax_{field}", color)
