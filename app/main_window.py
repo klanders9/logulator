@@ -94,6 +94,7 @@ class MainWindow(QMainWindow):
         self._serial_panel.connect_requested.connect(self._on_connect)
         self._serial_panel.disconnect_requested.connect(self._on_disconnect)
         self._serial_panel.font_size_changed.connect(self._on_font_size_changed)
+        self._serial_panel.clear_requested.connect(self._on_clear)
         self._filter_bar.filters_changed.connect(self._on_filters_changed)
 
         self._raw_pane.selectionChanged.connect(self._on_raw_pane_selection_changed)
@@ -137,10 +138,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.StandardButton.No,
             )
             if reply == QMessageBox.StandardButton.Yes:
-                self._raw_pane.clear()
-                if self._filtered_pane.isVisible():
-                    self._filtered_pane.clear()
-                self._line_count = 0
+                self._on_clear()
 
     def _on_serial_error(self, message: str):
         self._on_disconnect(prompt_clear=False)
@@ -191,6 +189,12 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # UI controls
     # ------------------------------------------------------------------
+
+    def _on_clear(self):
+        self._raw_pane.clear()
+        if self._filtered_pane.isVisible():
+            self._filtered_pane.clear()
+        self._line_count = 0
 
     def _on_raw_pane_selection_changed(self):
         cursor = self._filtered_pane.textCursor()

@@ -21,6 +21,7 @@ class SerialPanel(QWidget):
     connect_requested = Signal(str, int)
     disconnect_requested = Signal()
     font_size_changed = Signal(int)
+    clear_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -54,7 +55,11 @@ class SerialPanel(QWidget):
         layout.addWidget(QLabel("Baud:"))
         layout.addWidget(self._baud_combo)
         layout.addWidget(self._connect_btn)
+        clear_btn = QPushButton("Clear")
+        clear_btn.clicked.connect(self.clear_requested)
+
         layout.addStretch()
+        layout.addWidget(clear_btn)
         layout.addWidget(QLabel("Font:"))
         layout.addWidget(font_combo)
         layout.addWidget(QLabel("pt"))
