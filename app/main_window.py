@@ -117,7 +117,7 @@ class MainWindow(QMainWindow):
         self._serial_panel.set_connected(True)
         self._timer.start()
 
-    def _on_disconnect(self):
+    def _on_disconnect(self, prompt_clear: bool = True):
         self._timer.stop()
         if self._worker is not None:
             self._worker.stop()
@@ -128,8 +128,22 @@ class MainWindow(QMainWindow):
         self._status_log.setText("Not connected")
         self._status_stats.setText("")
 
+        if prompt_clear:
+            reply = QMessageBox.question(
+                self,
+                "Clear display?",
+                "Clear the log display?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self._raw_pane.clear()
+                if self._filtered_pane.isVisible():
+                    self._filtered_pane.clear()
+                self._line_count = 0
+
     def _on_serial_error(self, message: str):
-        self._on_disconnect()
+        self._on_disconnect(prompt_clear=False)
         QMessageBox.critical(self, "Serial error", message)
 
     # ------------------------------------------------------------------
@@ -224,5 +238,5 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event):
-        self._on_disconnect()
+        self._on_disconnect(prompt_clear=False)
         super().closeEvent(event)
