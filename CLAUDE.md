@@ -56,9 +56,10 @@ str)` whenever anything changes.
 ### `app/ui/serial_panel.py` — `SerialPanel(QWidget)`
 Port `QComboBox` (populated from `serial.tools.list_ports`), baud rate
 selector (defaults to 115200), Refresh button, Connect/Disconnect toggle,
-and a font size dropdown (8–24 pt, defaults to 12). Disables port/baud
-controls while connected. Emits `connect_requested(port, baud)`,
-`disconnect_requested()`, and `font_size_changed(int)`.
+font size dropdown (8–24 pt, defaults to 12), and a Clear button. Disables
+port/baud controls while connected. Clear button is always enabled regardless
+of connection state. Emits `connect_requested(port, baud)`,
+`disconnect_requested()`, `font_size_changed(int)`, and `clear_requested()`.
 
 ### `app/main_window.py` — `MainWindow(QMainWindow)`
 Composes all panels. Key behaviors:
@@ -74,7 +75,12 @@ Composes all panels. Key behaviors:
   means filters apply to all lines currently in the raw pane buffer, not
   just lines received after the filter was added.
 - Both panes: `setMaximumBlockCount(10_000)`, black background (`#000000`),
-  grey text (`#cccccc`), monospace font (Menlo with Monospace style hint).
+  grey text (`#cccccc`), selection highlight (`#1a5fa8`), monospace font
+  (Menlo with Monospace style hint).
+- Selection is mutually exclusive between panes: starting a selection in one
+  clears any selection in the other. Implemented via `selectionChanged`
+  signals with `blockSignals(True/False)` around the clear to prevent
+  feedback loops.
 
 **Status bar:**
 - Left: current log filename while connected; "Not connected" otherwise.
@@ -84,10 +90,18 @@ Composes all panels. Key behaviors:
 **Font size:** `font_size_changed` from `SerialPanel` updates point size on
 both panes simultaneously.
 
+**Clearing the display:** `_on_clear()` clears both the raw pane and (if
+visible) the filtered pane, and resets `_line_count`. Does not affect the
+log file. Triggered by the Clear button in `SerialPanel` (always available)
+or by answering Yes to the clear-on-disconnect dialog. Never called
+automatically on error disconnect or window close.
+
 **Lifecycle:** `_on_connect` opens a new log session, resets line count and
-connect time, starts the worker and the status timer. `_on_disconnect` stops
-the timer, stops the worker, closes the log. `closeEvent` calls
-`_on_disconnect`.
+connect time, starts the worker and the status timer. `_on_disconnect(prompt_clear)`
+stops the timer, stops the worker, closes the log. When `prompt_clear=True`
+(explicit user disconnect), shows a Yes/No dialog offering to clear the
+display. `closeEvent` and error disconnect call `_on_disconnect(prompt_clear=False)`
+to skip the dialog.
 
 ### `main.py`
 `QApplication` entry point. Run with `.venv/bin/python main.py`.
@@ -99,8 +113,7 @@ Zephyr RTT/UART log lines typically look like:
 Level tags: <dbg> <inf> <wrn> <err>
 
 ## Current Status
-Initial implementation complete and tested on macOS. All core features
-working:
+Implementation complete and tested on macOS. All core features working:
 - Serial connect/disconnect with per-session timestamped log files
 - Live display in raw pane; filtered pane appears when rules are active
 - Filter types: substring, regex, level, module prefix; AND/OR mode;
@@ -108,6 +121,8 @@ working:
 - Filters retroactively apply to all lines in the raw pane buffer
 - Black/grey terminal-style display, configurable font size
 - Status bar with log filename, runtime, line count, file size
+- Mutual exclusion of text selection between raw and filtered panes
+- Clear button in toolbar (always enabled); clear-on-disconnect dialog
 
 **Under investigation:**
 - Possible bug where disconnecting and reconnecting reuses the same log
