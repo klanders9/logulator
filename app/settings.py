@@ -21,6 +21,10 @@ class AppSettings:
         "message": "#f8f8f2",
     }
 
+    _BUFFER_DEFAULT = 100_000
+    _BUFFER_MIN = 1_000
+    _BUFFER_MAX = 500_000
+
     def __init__(self):
         self._qs = QSettings(self._ORG, self._APP)
 
@@ -85,3 +89,13 @@ class AppSettings:
 
     def set_syntax_color(self, field: str, color: str) -> None:
         self._qs.setValue(f"color/syntax_{field}", color)
+
+    # --- Buffer ---
+
+    def buffer_cap(self) -> int:
+        v = self._qs.value("buffer/cap", self._BUFFER_DEFAULT, type=int)
+        return max(self._BUFFER_MIN, min(self._BUFFER_MAX, v))
+
+    def set_buffer_cap(self, val: int) -> None:
+        val = max(self._BUFFER_MIN, min(self._BUFFER_MAX, val))
+        self._qs.setValue("buffer/cap", val)

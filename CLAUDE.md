@@ -64,9 +64,12 @@ of connection state. Emits `connect_requested(port, baud)`,
 ### `app/settings.py` — `AppSettings`
 Wraps `QSettings` (org: `logulator`, app: `logulator`) with typed
 getters/setters and hardcoded defaults. Covers: window geometry, splitter
-state, sidebar open/closed, and all colorization settings (enabled, mode,
-apply-to, per-level colors, per-syntax-field colors). All future persistent
-settings go through this class.
+state, sidebar open/closed, colorization settings (enabled, mode, apply-to,
+per-level colors, per-syntax-field colors), and buffer cap. All future
+persistent settings go through this class.
+
+Buffer cap: `buffer_cap() -> int` / `set_buffer_cap(val: int)`. Default
+100,000, clamped to [1,000, 500,000] on read and write.
 
 ### `app/colorizer.py` — `Colorizer`
 Reads settings from `AppSettings` and converts a log line string into a list
@@ -89,12 +92,18 @@ Default colors (Dracula-inspired palette):
 
 ### `app/ui/settings_sidebar.py` — `SettingsSidebar(QWidget)`
 Fixed-width (280 px) collapsible panel shown on the right side of
-`MainWindow`. Contains a "Display" section with a "Colorization" subsection:
-enable checkbox, mode selector (Level/Syntax), apply-to selector (All panes /
-Raw log only / Filtered log only / None), and color-picker rows for all seven
-configurable colors. Each color row shows a live swatch; clicking `…` opens
-`QColorDialog`. Emits `settings_changed()` on any change. Reads/writes
-directly through `AppSettings`.
+`MainWindow`. Contains:
+
+- **Display / Colorization:** enable checkbox, mode selector (Level/Syntax),
+  apply-to selector (All panes / Raw log only / Filtered log only / None),
+  and color-picker rows for all seven configurable colors. Each color row
+  shows a live swatch; clicking `…` opens `QColorDialog`. Emits
+  `settings_changed()` on any change.
+- **Buffer:** `QSpinBox` for the display line cap (range 1,000–500,000, step
+  1,000, default 100,000). Emits `buffer_cap_changed(int)` — a separate
+  signal so changes don't trigger a full pane rebuild.
+
+Reads/writes directly through `AppSettings`.
 
 ### `app/main_window.py` — `MainWindow(QMainWindow)`
 Composes all panels. Key behaviors:
@@ -107,12 +116,22 @@ is persisted via `AppSettings`. Window geometry and splitter state are also
 saved to `AppSettings` on close and restored on startup.
 
 **Display panes:** Both `_raw_pane` and `_filtered_pane` are `LogPane`
-instances (a `QTextEdit` subclass defined in this file). `LogPane` overrides
-`createMimeData` to always produce plain text (via
-`selection.toPlainText()`), never HTML. Lines are inserted via
-`LogPane.append_line(segments, scroll=True)` which enforces the 10,000-line
-cap by trimming from the top using a `Start→NextBlock` cursor selection when
-`document().blockCount()` exceeds the limit.
+instances (a `QTextEdit` subclass defined in this file). `LogPane` key
+behaviors:
+- `createMimeData` always produces plain text (via `selection.toPlainText()`),
+  never HTML.
+- `append_line(segments, scroll=True)` inserts a line and enforces the
+  configurable cap by trimming the oldest block when
+  `document().blockCount()` exceeds `self._cap`. Smart scroll: when
+  `scroll=True`, only scrolls to the bottom if the pane was already at the
+  bottom before the insert (checked via `sb.value() >= sb.maximum() - 4`).
+  Rebuild callers pass `scroll=False` and scroll once after the loop.
+- `set_cap(n)` updates `self._cap` and immediately trims from the top if the
+  current buffer exceeds the new cap. Default cap is `_DEFAULT_CAP = 100_000`.
+- `mouseDoubleClickEvent` emits `line_double_clicked(str)` with the block
+  text at the click position (after calling super so Qt's word-select still
+  runs). Only `_filtered_pane.line_double_clicked` is connected (to
+  `_jump_to_raw_line`); the raw pane signal is unused.
 
 **Split pane display:**
 - Top pane (`_raw_pane`): all incoming lines, unfiltered, always visible.
@@ -131,6 +150,12 @@ cap by trimming from the top using a `Start→NextBlock` cursor selection when
 - Selection is mutually exclusive between panes: starting a selection in one
   clears any selection in the other. Implemented via `selectionChanged`
   signals with `blockSignals(True/False)` around the clear.
+- Double-clicking a line in `_filtered_pane` calls `_jump_to_raw_line(line)`:
+  finds the first matching block in `_raw_pane`, selects it
+  (`StartOfBlock → EndOfBlock` with `KeepAnchor`), gives the raw pane focus,
+  then centers it in the viewport via `ensureCursorVisible()` + scrollbar
+  adjustment. The mutual-exclusion handlers automatically clear the filtered
+  pane's word-select. Silent no-op if the line is not in the raw pane buffer.
 
 **Colorization:** `_get_segments(line, pane)` checks `AppSettings` for
 enabled/apply-to and delegates to `Colorizer.colorize()` if active for that
@@ -186,6 +211,12 @@ Implementation complete and tested on macOS. All core features working:
 - Mutual exclusion of text selection between raw and filtered panes
 - Copy from either pane always produces plain text (never HTML)
 - Clear button (always enabled); clear-on-disconnect dialog
+- Double-click in filtered pane selects and centers matching line in raw pane,
+  with focus transferred so Cmd/Ctrl+C works immediately
+- Configurable display buffer cap (default 100,000 lines; 1,000–500,000) in
+  settings sidebar; applied immediately, trims from top if over cap
+- Smart scroll: both panes only auto-scroll to bottom on new data when already
+  at the bottom; scrolling up pauses auto-scroll without any toggle
 
 **Under investigation:**
 - Possible bug where disconnecting and reconnecting reuses the same log
@@ -196,11 +227,11 @@ Implementation complete and tested on macOS. All core features working:
 - Serial port device paths: /dev/tty.usbmodem* or /dev/tty.usbserial* on
   macOS, /dev/ttyACM* or /dev/ttyUSB* on Linux, COM* on Windows
 - Log files must survive a GUI crash — flush after every write
-- Raw pane buffer capped at 10,000 lines; enforced manually in
-  `LogPane.append_line()` by trimming the oldest block when
-  `document().blockCount()` exceeds the limit. Filtered pane is rebuilt
-  from raw pane blocks, so it is bounded by the same 10k limit. The log
-  file is the source of truth for full history.
+- Display buffer cap is configurable (default 100,000, range 1,000–500,000),
+  persisted via `AppSettings`. Enforced in `LogPane.append_line()` and
+  `LogPane.set_cap()` by trimming oldest blocks when `document().blockCount()`
+  exceeds `self._cap`. Filtered pane is rebuilt from raw pane blocks so it is
+  bounded by the same cap. The log file is the source of truth for full history.
 - `\r\n` line endings from Zephyr UART must be stripped to `\r` before
   display — handled in `SerialWorker.run()` with `line.rstrip(b"\r")`.
 - The .venv is Python 3.9 despite the 3.11+ requirement. Avoid new-style

@@ -4,7 +4,7 @@ panes. Enforces the 10,000-line display cap via LogPane.append_line()."""
 from datetime import datetime
 from typing import List, Optional, Tuple
 
-from PySide6.QtCore import QMimeData, Qt, QTimer
+from PySide6.QtCore import QMimeData, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -26,7 +26,7 @@ from app.ui.filter_bar import FilterBar
 from app.ui.serial_panel import SerialPanel
 from app.ui.settings_sidebar import SettingsSidebar
 
-_MAX_DISPLAY_LINES = 10_000
+_DEFAULT_CAP = 100_000
 _DEFAULT_FONT_SIZE = 12
 _PANE_STYLE = (
     "QTextEdit {"
@@ -39,8 +39,31 @@ _PLAIN_COLOR = "#cccccc"
 
 
 class LogPane(QTextEdit):
-    """QTextEdit subclass that: (a) copies as plain text only, and
-    (b) enforces a hard line cap via append_line()."""
+    """QTextEdit subclass that: (a) copies as plain text only,
+    (b) enforces a configurable line cap via append_line(), and
+    (c) emits line_double_clicked(str) on double-click."""
+
+    line_double_clicked = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._cap = _DEFAULT_CAP
+
+    def set_cap(self, new_cap: int) -> None:
+        self._cap = new_cap
+        doc = self.document()
+        while doc.blockCount() > self._cap:
+            trim = QTextCursor(doc)
+            trim.movePosition(QTextCursor.MoveOperation.Start)
+            trim.movePosition(QTextCursor.MoveOperation.NextBlock, QTextCursor.MoveMode.KeepAnchor)
+            trim.removeSelectedText()
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        cursor = self.cursorForPosition(event.pos())
+        line = cursor.block().text()
+        super().mouseDoubleClickEvent(event)
+        if line:
+            self.line_double_clicked.emit(line)
 
     def createMimeData(self, selection) -> QMimeData:
         mime = QMimeData()
@@ -48,6 +71,9 @@ class LogPane(QTextEdit):
         return mime
 
     def append_line(self, segments: List[Tuple[str, QTextCharFormat]], scroll: bool = True) -> None:
+        sb = self.verticalScrollBar()
+        was_at_bottom = sb.value() >= sb.maximum() - 4
+
         doc = self.document()
         is_empty = doc.blockCount() == 1 and doc.lastBlock().text() == ""
 
@@ -58,15 +84,13 @@ class LogPane(QTextEdit):
         for text, fmt in segments:
             cursor.insertText(text, fmt)
 
-        # Trim oldest line when over cap
-        while doc.blockCount() > _MAX_DISPLAY_LINES:
+        while doc.blockCount() > self._cap:
             trim = QTextCursor(doc)
             trim.movePosition(QTextCursor.MoveOperation.Start)
             trim.movePosition(QTextCursor.MoveOperation.NextBlock, QTextCursor.MoveMode.KeepAnchor)
             trim.removeSelectedText()
 
-        if scroll:
-            sb = self.verticalScrollBar()
+        if scroll and was_at_bottom:
             sb.setValue(sb.maximum())
 
 
@@ -159,6 +183,13 @@ class MainWindow(QMainWindow):
         self._filter_bar.filters_changed.connect(self._on_filters_changed)
         self._raw_pane.selectionChanged.connect(self._on_raw_pane_selection_changed)
         self._filtered_pane.selectionChanged.connect(self._on_filtered_pane_selection_changed)
+        self._filtered_pane.line_double_clicked.connect(self._jump_to_raw_line)
+        self._sidebar.buffer_cap_changed.connect(self._on_buffer_cap_changed)
+
+        # Apply persisted buffer cap (overrides _DEFAULT_CAP set in LogPane.__init__)
+        initial_cap = self._settings.buffer_cap()
+        self._raw_pane.set_cap(initial_cap)
+        self._filtered_pane.set_cap(initial_cap)
 
         # Restore geometry
         geometry = self._settings.load_geometry()
@@ -291,6 +322,27 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # UI controls
     # ------------------------------------------------------------------
+
+    def _jump_to_raw_line(self, line: str) -> None:
+        doc = self._raw_pane.document()
+        block = doc.begin()
+        while block != doc.end():
+            if block.text() == line:
+                cursor = QTextCursor(block)
+                cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
+                cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor)
+                self._raw_pane.setTextCursor(cursor)
+                self._raw_pane.setFocus()
+                self._raw_pane.ensureCursorVisible()
+                rect = self._raw_pane.cursorRect()
+                sb = self._raw_pane.verticalScrollBar()
+                sb.setValue(sb.value() + rect.center().y() - self._raw_pane.viewport().height() // 2)
+                return
+            block = block.next()
+
+    def _on_buffer_cap_changed(self, cap: int) -> None:
+        self._raw_pane.set_cap(cap)
+        self._filtered_pane.set_cap(cap)
 
     def _on_clear(self):
         self._raw_pane.clear()

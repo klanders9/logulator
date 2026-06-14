@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -25,6 +26,7 @@ _APPLY_VALUES = ["all", "raw", "filtered", "none"]
 
 class SettingsSidebar(QWidget):
     settings_changed = Signal()
+    buffer_cap_changed = Signal(int)
 
     def __init__(self, settings: AppSettings, parent=None):
         super().__init__(parent)
@@ -80,6 +82,18 @@ class SettingsSidebar(QWidget):
                 lambda f=field: self._s.syntax_color(f),
                 lambda c, f=field: self._set_syntax_color(f, c),
             ))
+
+        layout.addWidget(self._section_label("Buffer"))
+        cap_row = QHBoxLayout()
+        cap_row.addWidget(QLabel("Line cap:"), stretch=1)
+        self._cap_spin = QSpinBox()
+        self._cap_spin.setRange(1_000, 500_000)
+        self._cap_spin.setSingleStep(1_000)
+        self._cap_spin.setValue(settings.buffer_cap())
+        self._cap_spin.setFixedWidth(90)
+        self._cap_spin.valueChanged.connect(self._on_buffer_cap_changed)
+        cap_row.addWidget(self._cap_spin)
+        layout.addLayout(cap_row)
 
         layout.addStretch()
 
@@ -152,3 +166,7 @@ class SettingsSidebar(QWidget):
 
     def _set_syntax_color(self, field: str, color: str) -> None:
         self._s.set_syntax_color(field, color)
+
+    def _on_buffer_cap_changed(self, value: int) -> None:
+        self._s.set_buffer_cap(value)
+        self.buffer_cap_changed.emit(value)
