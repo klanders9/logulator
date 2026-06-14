@@ -46,13 +46,15 @@ class AboutDialog(QDialog):
         version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(version_label)
 
-        desc_label = QLabel(
-            "A cross-platform serial log viewer and analyzer\n"
-            "for Zephyr RTOS development."
-        )
+        desc_label = QLabel("A cross-platform serial log viewer and analyzer.")
         desc_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         desc_label.setWordWrap(True)
         layout.addWidget(desc_label)
+
+        copyright_label = QLabel("Copyright © 2026 Kevin Landers")
+        copyright_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        copyright_label.setStyleSheet("color: #888888;")
+        layout.addWidget(copyright_label)
 
         license_label = QLabel("License: MIT")
         license_label.setAlignment(Qt.AlignmentFlag.AlignCenter)

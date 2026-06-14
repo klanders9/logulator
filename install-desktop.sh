@@ -22,7 +22,7 @@ cat > ~/.local/share/applications/logulator.desktop << EOF
 [Desktop Entry]
 Type=Application
 Name=logulator
-Comment=A cross-platform serial log viewer and analyzer for Zephyr RTOS development.
+Comment=A cross-platform serial log viewer and analyzer.
 Exec=$EXEC_CMD
 Icon=$REPO_DIR/icon.png
 StartupWMClass=logulator

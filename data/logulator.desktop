@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=logulator
-Comment=A cross-platform serial log viewer and analyzer for Zephyr RTOS development.
+Comment=A cross-platform serial log viewer and analyzer.
 Exec=logulator
 Icon=logulator
 StartupWMClass=logulator

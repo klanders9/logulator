@@ -5,7 +5,7 @@ build-backend = "setuptools.backends.legacy:build"
 [project]
 name = "logulator"
 version = "0.1.0"
-description = "A cross-platform serial log viewer and analyzer for Zephyr RTOS development."
+description = "A cross-platform serial log viewer and analyzer."
 requires-python = ">=3.9"
 dependencies = [
     "PySide6>=6.7.0",

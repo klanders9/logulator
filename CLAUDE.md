@@ -2,8 +2,8 @@
 
 ## Project Purpose
 A cross-platform desktop GUI tool (macOS, Linux, Windows) for monitoring and
-filtering serial output from embedded targets running Zephyr RTOS. Primary
-use case: nRF54L15 development with nRF Connect SDK.
+filtering serial log output. Designed for embedded development workflows where
+a target device streams structured log output over a serial port.
 
 ## Core Design Principle
 Raw log collection and filtered display are strictly separated:
