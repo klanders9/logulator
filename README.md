@@ -9,7 +9,7 @@ A cross-platform desktop GUI for monitoring and filtering serial log output.
 - Filter display by substring, regex, log level (`<dbg>` `<inf>` `<wrn>` `<err>`), or module name
 - Include and exclude rules, combinable with AND/OR logic
 - Configurable rolling display buffer (default 100,000 lines; log file retains everything)
-- Syntax colorization with configurable per-level and per-field colors
+- Syntax colorization with configurable per-level and per-field colors; understands Zephyr, syslog (traditional and ISO 8601), and generic keyword-based severity detection
 - Smart scroll: auto-scrolls to new output only when already at the bottom
 - Double-click a line in the filtered pane to jump to and select it in the raw pane
 - Open log files in standalone viewer windows (File → Open Log File… or drag-and-drop)

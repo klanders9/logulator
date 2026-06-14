@@ -132,14 +132,24 @@ Reads settings from `AppSettings` and converts a log line string into a list
 of `(text, QTextCharFormat)` segments for insertion into `QTextEdit`.
 
 Two modes:
-- `level` — whole line gets one color based on the `<level>` tag.
-- `syntax` — four segments: timestamp, level tag, module name, message body,
-  each colored independently.
+- `level` — whole line colored by severity. Checks for a Zephyr `<level>` tag
+  first; if absent, falls back to keyword scan (`error/fatal/critical`,
+  `warning/warn`, `info/notice`, `debug/trace` — case-insensitive,
+  word-boundary anchored). Lines with no detectable level are plain grey.
+- `syntax` — line parsed into segments, each colored independently. Tries
+  three formats in order:
+  1. **Zephyr** `[timestamp] <level> module: message` — four segments colored
+     as timestamp / level / module / message.
+  2. **Syslog ISO 8601** `2024-01-02T10:23:45.000+00:00 host proc[pid]: msg`
+  3. **Syslog traditional** `Jan  2 10:23:45 host proc[pid]: msg`
+  For syslog formats: timestamp → timestamp color, hostname → plain grey,
+  `proc[pid]:` → module color, message → message color (or a level color
+  if the message text matches a severity keyword).
+  Lines matching none of the above are plain grey.
 
-Parses with a single compiled regex against the standard Zephyr format.
-Falls back to `#cccccc` for lines that don't match. The `Colorizer` instance
-is owned by the window that created it and reads live settings on every call
-so color changes apply immediately on the next line or rebuild.
+The `Colorizer` instance is owned by the window that created it and reads live
+settings on every call so color changes apply immediately on the next line or
+rebuild.
 
 Default colors (Dracula-inspired palette):
 - `<err>` → `#ff5555`, `<wrn>` → `#ffb86c`, `<inf>` → `#50fa7b`,
@@ -323,11 +333,20 @@ display. `closeEvent` saves geometry/splitter state, then calls
 `icon.png` from the repo root (if present) and sets it as the app icon via
 `QIcon`.
 
-## Zephyr Log Format
-Zephyr RTT/UART log lines typically look like:
+## Supported Log Formats
+
+**Zephyr RTOS** (primary target — all filter types and colorization fully supported):
   [00:00:01.234,567] <inf> my_module: Some message here
   [00:00:01.234,567] <err> my_module: Something failed: -5
-Level tags: <dbg> <inf> <wrn> <err>
+Level tags: `<dbg>` `<inf>` `<wrn>` `<err>`
+
+**Syslog traditional** (colorization in syntax/level modes; filters work on raw text):
+  Jun 14 10:23:45 hostname systemd[1]: Started network.target.
+
+**Syslog ISO 8601** (same colorization support as traditional):
+  2024-06-14T10:23:45.123456+00:00 hostname kernel: message here
+
+**Generic / unstructured** (level mode uses keyword scan; syntax mode renders plain grey).
 
 ## Current Status
 Implementation complete and tested on macOS. All core features working:
@@ -338,7 +357,9 @@ Implementation complete and tested on macOS. All core features working:
 - Filters retroactively apply to all lines in the raw pane buffer
 - Log colorization: level mode (whole-line color) and syntax mode
   (per-field coloring) with Dracula-inspired defaults; all colors
-  user-configurable via color pickers in the settings sidebar
+  user-configurable via color pickers in the settings sidebar; supports
+  Zephyr, syslog (traditional and ISO 8601), and keyword-based level
+  detection for unstructured formats
 - Collapsible settings sidebar (⚙ Settings toolbar button); sidebar
   open/closed state persisted across launches
 - Persistent settings via QSettings: window geometry, splitter position,
