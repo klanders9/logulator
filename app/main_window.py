@@ -134,14 +134,14 @@ class MainWindow(QMainWindow):
         self._splitter.addWidget(self._filtered_pane)
 
         self._serial_panel = SerialPanel()
-        self._filter_bar = FilterBar()
+        self._filter_bar = FilterBar(self._settings)
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(4)
-        left_layout.addWidget(self._serial_panel)
         left_layout.addWidget(self._filter_bar)
+        left_layout.addWidget(self._serial_panel)
         left_layout.addWidget(self._splitter, stretch=1)
 
         self._sidebar = SettingsSidebar(self._settings)
@@ -156,10 +156,14 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(left, stretch=1)
         main_layout.addWidget(self._sidebar)
 
-        # Gear button in toolbar
-        toolbar = self.addToolBar("Settings")
+        # Toolbar
+        toolbar = self.addToolBar("Main")
         toolbar.setMovable(False)
         toolbar.setFloatable(False)
+        self._filter_action = toolbar.addAction("▽ Filter")
+        self._filter_action.setCheckable(True)
+        self._filter_action.setChecked(self._settings.filter_bar_open())
+        self._filter_action.toggled.connect(self._on_filter_action_toggled)
         self._settings_action = toolbar.addAction("⚙  Settings")
         self._settings_action.setCheckable(True)
         self._settings_action.setChecked(self._settings.sidebar_open())
@@ -181,6 +185,7 @@ class MainWindow(QMainWindow):
         self._serial_panel.font_size_changed.connect(self._on_font_size_changed)
         self._serial_panel.clear_requested.connect(self._on_clear)
         self._filter_bar.filters_changed.connect(self._on_filters_changed)
+        self._filter_bar.input_bar_closed.connect(self._on_filter_bar_closed)
         self._raw_pane.selectionChanged.connect(self._on_raw_pane_selection_changed)
         self._filtered_pane.selectionChanged.connect(self._on_filtered_pane_selection_changed)
         self._filtered_pane.line_double_clicked.connect(self._jump_to_raw_line)
@@ -199,6 +204,9 @@ class MainWindow(QMainWindow):
         if splitter_state:
             self._splitter.restoreState(splitter_state)
             self._splitter_initialized = True
+
+        # Sync filter state from persisted settings (filter bar loads rules in __init__)
+        self._on_filters_changed(self._filter_bar.get_rules(), self._filter_bar.get_mode())
 
     # ------------------------------------------------------------------
     # Colorization helpers
@@ -354,6 +362,15 @@ class MainWindow(QMainWindow):
         self._rebuild_raw_pane()
         if self._filtered_pane.isVisible():
             self._rebuild_filtered_pane()
+
+    def _on_filter_action_toggled(self, checked: bool):
+        if checked != self._filter_bar.is_input_bar_open():
+            self._filter_bar.toggle_input_bar()
+
+    def _on_filter_bar_closed(self):
+        self._filter_action.blockSignals(True)
+        self._filter_action.setChecked(False)
+        self._filter_action.blockSignals(False)
 
     def _on_sidebar_toggle(self, checked: bool):
         self._sidebar.setVisible(checked)

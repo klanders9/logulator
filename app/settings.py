@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Kevin Landers. SPDX-License-Identifier: MIT
 """QSettings-backed persistent settings for logulator."""
 
+import json
 from typing import Optional
 
 from PySide6.QtCore import QByteArray, QSettings
@@ -100,3 +101,31 @@ class AppSettings:
     def set_buffer_cap(self, val: int) -> None:
         val = max(self._BUFFER_MIN, min(self._BUFFER_MAX, val))
         self._qs.setValue("buffer/cap", val)
+
+    # --- Filter ---
+
+    def filter_rules(self) -> list:
+        v = self._qs.value("filter/rules", "[]")
+        if not isinstance(v, str):
+            return []
+        try:
+            result = json.loads(v)
+            return result if isinstance(result, list) else []
+        except (json.JSONDecodeError, ValueError):
+            return []
+
+    def set_filter_rules(self, rules: list) -> None:
+        self._qs.setValue("filter/rules", json.dumps(rules))
+
+    def filter_mode(self) -> str:
+        v = self._qs.value("filter/mode", "OR")
+        return v if v in ("AND", "OR") else "OR"
+
+    def set_filter_mode(self, mode: str) -> None:
+        self._qs.setValue("filter/mode", mode)
+
+    def filter_bar_open(self) -> bool:
+        return self._qs.value("filter/bar_open", False, type=bool)
+
+    def set_filter_bar_open(self, val: bool) -> None:
+        self._qs.setValue("filter/bar_open", val)
