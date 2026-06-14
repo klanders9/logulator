@@ -328,10 +328,22 @@ stops the timer, stops the worker, closes the log. When `prompt_clear=True`
 display. `closeEvent` saves geometry/splitter state, then calls
 `_on_disconnect(prompt_clear=False)`.
 
+### `app/theme.py` — `apply_dark_palette`
+Applies the Fusion Qt style and a Dracula-aligned `QPalette` to the
+`QApplication`. Called unconditionally on all platforms from `main.py`.
+
+Key colors: window/panel bg `#282a36`, input bg `#21222c`, buttons/surfaces
+`#44475a`, primary text `#f8f8f2`, disabled text `#6272a4`, selection
+`#1a5fa8` (matches log pane stylesheet), links `#8be9fd`. Disabled-state
+colors are set separately via `QPalette.ColorGroup.Disabled`. Log panes are
+unaffected — they keep their own explicit `#000000` background via
+`_PANE_STYLE`, which intentionally sits darker than the `#282a36` chrome.
+
 ### `main.py`
 `QApplication` entry point. Run with `.venv/bin/python main.py`. Loads
 `icon.png` from the repo root (if present) and sets it as the app icon via
-`QIcon`.
+`QIcon`. Calls `apply_dark_palette(app)` unconditionally so the Dracula theme
+is consistent across macOS, Linux, and Windows.
 
 ## Supported Log Formats
 
