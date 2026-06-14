@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Kevin Landers. SPDX-License-Identifier: MIT
 """QSettings-backed persistent settings for logulator."""
 
 from typing import Optional

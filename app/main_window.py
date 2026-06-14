@@ -1,5 +1,5 @@
-"""Top-level QMainWindow. Composes SerialPanel, FilterBar, and the display
-panes. Enforces the 10,000-line display cap via LogPane.append_line()."""
+# Copyright (c) 2026 Kevin Landers. SPDX-License-Identifier: MIT
+"""Top-level QMainWindow. Composes SerialPanel, FilterBar, and the display panes."""
 
 from datetime import datetime
 from typing import List, Optional, Tuple

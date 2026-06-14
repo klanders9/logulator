@@ -1,4 +1,5 @@
-"""Colorizes Zephyr log lines into (text, QTextCharFormat) segment lists."""
+# Copyright (c) 2026 Kevin Landers. SPDX-License-Identifier: MIT
+"""Colorizes log lines into (text, QTextCharFormat) segment lists."""
 
 import re
 from typing import List, Tuple

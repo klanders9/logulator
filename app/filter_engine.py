@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Kevin Landers. SPDX-License-Identifier: MIT
 """Stateless filter logic. A filter rule is a dict with keys:
   type: 'substring' | 'regex' | 'level' | 'module'
   value: str

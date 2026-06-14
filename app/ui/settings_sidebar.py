@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Kevin Landers. SPDX-License-Identifier: MIT
 """Collapsible right-side settings sidebar."""
 
 from typing import Callable

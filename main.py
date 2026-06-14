@@ -1,4 +1,7 @@
+# Copyright (c) 2026 Kevin Landers. SPDX-License-Identifier: MIT
 """Entry point for logulator. Creates QApplication and launches MainWindow."""
+
+# ✝ Soli Deo Gloria
 
 import sys
 from pathlib import Path
