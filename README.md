@@ -12,6 +12,10 @@ A cross-platform desktop GUI for monitoring and filtering serial log output.
 - Syntax colorization with configurable per-level and per-field colors
 - Smart scroll: auto-scrolls to new output only when already at the bottom
 - Double-click a line in the filtered pane to jump to and select it in the raw pane
+- Open log files in standalone viewer windows (File → Open Log File… or drag-and-drop)
+- File viewer: filter bar, inline find (Ctrl+F), and **Follow mode** to tail live-appended files
+- Recent Files submenu (last 10 opened files, greyed out if unavailable)
+- Help → About dialog with version, license, and GitHub link
 
 ## Requirements
 
@@ -39,6 +43,8 @@ python main.py
    - **module** — prefix-matches the module field (e.g. `bt_hci` matches `bt_hci_core`)
 4. Choose **include** or **exclude** per rule, and toggle **AND/OR** to control how include rules combine
 5. Click **Disconnect** or close the window to end the session
+
+To view a saved log file, use **File → Open Log File…** (Ctrl+O), drag a file onto either display pane, or pick from **File → Recent Files**. Enable **Follow** in the file viewer toolbar to tail a file that is still being written to; scrolling up pauses following and a **⬇ Resume** button appears to jump back to the bottom.
 
 ## Log files
 

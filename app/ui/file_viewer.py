@@ -5,7 +5,7 @@ compact filter bar as the main window (Phase 2a), and an inline find bar (Phase 
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QFileSystemWatcher, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -75,6 +75,15 @@ class FileViewer(QMainWindow):
         self._search_timer.setInterval(_SEARCH_DEBOUNCE_MS)
         self._search_timer.timeout.connect(self._do_search)
 
+        # Tail/follow state
+        self._follow = False
+        self._follow_paused = False
+        self._follow_pos = 0         # byte offset after last read
+        self._tail_buffer = ""       # incomplete last line from previous read
+        self._programmatic_scroll = False
+        self._watcher = QFileSystemWatcher(self)
+        self._watcher.fileChanged.connect(self._on_file_changed)
+
         self.setWindowTitle(path.name)
         self.resize(1100, 700)
 
@@ -117,6 +126,15 @@ class FileViewer(QMainWindow):
         self._filter_action.setCheckable(True)
         self._filter_action.toggled.connect(self._on_filter_action_toggled)
 
+        self._follow_action = toolbar.addAction("Follow")
+        self._follow_action.setCheckable(True)
+        self._follow_action.setChecked(False)
+        self._follow_action.toggled.connect(self._on_follow_toggled)
+
+        self._resume_action = toolbar.addAction("⬇ Resume")
+        self._resume_action.setVisible(False)
+        self._resume_action.triggered.connect(self._on_resume)
+
         # ---- Ctrl+F shortcut ----
         find_action = QAction(self)
         find_action.setShortcut(QKeySequence("Ctrl+F"))
@@ -141,6 +159,8 @@ class FileViewer(QMainWindow):
         self._find_bar.go_prev.connect(self._on_find_prev)
         self._find_bar.closed.connect(self._on_find_bar_closed)
         self._find_bar.filter_to_matches.connect(self._on_filter_to_matches)
+
+        self._raw_pane.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
 
         # ---- Start loading ----
         self._start_load()
@@ -173,6 +193,9 @@ class FileViewer(QMainWindow):
     def _on_load_complete(self, total: int) -> None:
         self._loading = False
         self._total_lines = total
+        # Record file position for tail mode
+        if self._path.exists():
+            self._follow_pos = self._path.stat().st_size
         # Scroll both panes to bottom after full load
         for pane in (self._raw_pane, self._filtered_pane):
             sb = pane.verticalScrollBar()
@@ -411,10 +434,94 @@ class FileViewer(QMainWindow):
         self._raw_pane.setExtraSelections([])
 
     # ------------------------------------------------------------------
+    # Tail / follow mode
+    # ------------------------------------------------------------------
+
+    def _on_follow_toggled(self, checked: bool) -> None:
+        self._follow = checked
+        self._follow_paused = False
+        self._resume_action.setVisible(False)
+        if checked:
+            if self._path.exists():
+                self._follow_pos = self._path.stat().st_size
+            self._tail_buffer = ""
+            self._watcher.addPath(str(self._path))
+            self._scroll_to_follow_bottom()
+        else:
+            watched = self._watcher.files()
+            if watched:
+                self._watcher.removePaths(watched)
+
+    def _scroll_to_follow_bottom(self) -> None:
+        self._programmatic_scroll = True
+        sb = self._raw_pane.verticalScrollBar()
+        sb.setValue(sb.maximum())
+        self._programmatic_scroll = False
+
+    def _on_file_changed(self, path: str) -> None:
+        if not self._follow:
+            return
+        # Re-add path if the watcher dropped it (some platforms remove it after a change)
+        if str(self._path) not in self._watcher.files():
+            if self._path.exists():
+                self._watcher.addPath(str(self._path))
+        try:
+            with open(self._path, "rb") as f:
+                f.seek(self._follow_pos)
+                new_bytes = f.read()
+        except OSError:
+            return
+        if not new_bytes:
+            return
+        self._follow_pos += len(new_bytes)
+
+        text = self._tail_buffer + new_bytes.decode("utf-8", errors="replace")
+        parts = text.split("\n")
+        self._tail_buffer = parts[-1]
+        complete_lines = parts[:-1]
+
+        for raw_line in complete_lines:
+            line = raw_line.rstrip("\r")
+            segs = self._get_segments(line, "raw")
+            self._raw_pane.append_line(segs, scroll=False)
+            if self._rules and filter_engine.match(line, self._rules, self._filter_mode):
+                self._filtered_pane.append_line(
+                    self._get_segments(line, "filtered"), scroll=False
+                )
+
+        if complete_lines:
+            self._total_lines += len(complete_lines)
+            self._update_status()
+            if not self._follow_paused:
+                self._scroll_to_follow_bottom()
+
+    def _on_scroll_changed(self, value: int) -> None:
+        if self._programmatic_scroll or not self._follow:
+            return
+        sb = self._raw_pane.verticalScrollBar()
+        at_bottom = value >= sb.maximum() - 4
+        if at_bottom:
+            if self._follow_paused:
+                self._follow_paused = False
+                self._resume_action.setVisible(False)
+        else:
+            if not self._follow_paused:
+                self._follow_paused = True
+                self._resume_action.setVisible(True)
+
+    def _on_resume(self) -> None:
+        self._follow_paused = False
+        self._resume_action.setVisible(False)
+        self._scroll_to_follow_bottom()
+
+    # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     def closeEvent(self, event) -> None:
+        watched = self._watcher.files()
+        if watched:
+            self._watcher.removePaths(watched)
         if self._worker is not None:
             self._worker.cancel()
             self._worker.wait(500)

@@ -129,3 +129,25 @@ class AppSettings:
 
     def set_filter_bar_open(self, val: bool) -> None:
         self._qs.setValue("filter/bar_open", val)
+
+    # --- Recent files ---
+
+    _RECENT_MAX = 10
+
+    def recent_files(self) -> list:
+        v = self._qs.value("files/recent", "[]")
+        if not isinstance(v, str):
+            return []
+        try:
+            result = json.loads(v)
+            return result if isinstance(result, list) else []
+        except (json.JSONDecodeError, ValueError):
+            return []
+
+    def add_recent_file(self, path) -> None:
+        s = str(path)
+        paths = self.recent_files()
+        if s in paths:
+            paths.remove(s)
+        paths.insert(0, s)
+        self._qs.setValue("files/recent", json.dumps(paths[: self._RECENT_MAX]))

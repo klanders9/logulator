@@ -19,6 +19,16 @@ Raw log collection and filtered display are strictly separated:
 - pyserial for serial port access
 - No other dependencies without asking first
 
+## Versioning
+`pyproject.toml` at the project root defines `name = "logulator"` and
+`version = "0.1.0"` using the setuptools build backend.
+
+`app/version.py` exposes `__version__` by calling
+`importlib.metadata.version("logulator")` (available in Python 3.8+).
+Falls back to `"dev"` via `PackageNotFoundError` when running from source
+without installing the package. Import `__version__` from here wherever the
+version string is needed (e.g. the About dialog).
+
 ## Architecture
 
 ### `app/log_writer.py` — `LogWriter`
@@ -100,7 +110,8 @@ of connection state. Emits `connect_requested(port, baud)`,
 Wraps `QSettings` (org: `logulator`, app: `logulator`) with typed
 getters/setters and hardcoded defaults. Covers: window geometry, splitter
 state, sidebar open/closed, colorization settings (enabled, mode, apply-to,
-per-level colors, per-syntax-field colors), buffer cap, and filter state.
+per-level colors, per-syntax-field colors), buffer cap, filter state, and
+recent files.
 All future persistent settings go through this class.
 
 Buffer cap: `buffer_cap() -> int` / `set_buffer_cap(val: int)`. Default
@@ -110,6 +121,11 @@ Filter persistence (main window only — file viewers don't persist):
 - `filter_rules() -> list` / `set_filter_rules(rules: list)` — stored as JSON.
 - `filter_mode() -> str` / `set_filter_mode(mode: str)` — `'AND'` or `'OR'`.
 - `filter_bar_open() -> bool` / `set_filter_bar_open(val: bool)`.
+
+Recent files:
+- `recent_files() -> list` — ordered list of path strings, most recent first.
+  Stored as JSON under `files/recent`.
+- `add_recent_file(path)` — prepends `path`, deduplicates, caps at 10 entries.
 
 ### `app/colorizer.py` — `Colorizer`
 Reads settings from `AppSettings` and converts a log line string into a list
@@ -169,33 +185,38 @@ Signals:
 `set_match_status(current, total, has_query)` updates the counter label and
 colors the input red when there are no matches.
 
+### `app/ui/about_dialog.py` — `AboutDialog(QDialog)`
+Simple modal dialog opened from Help → About Logulator. Shows: `icon.png`
+(if present, scaled to 64×64), app name, version from `app.version.__version__`,
+description, MIT license, clickable GitHub link (`https://github.com/klanders9/logulator`),
+and "† Soli Deo Gloria". Fixed width, OK button to dismiss.
+
 ### `app/ui/file_viewer.py` — `FileViewer(QMainWindow)`
 Standalone log file viewer. Multiple instances may coexist; none are parented
 to `MainWindow` so closing the main window does not close them.
 
-**Opening:** `MainWindow.open_file(path)` creates an instance, stores it in
-`_file_viewers` to prevent GC, connects `about_to_close` for cleanup and
-`open_file_requested` so drags within a viewer open additional viewers through
-`MainWindow`.
+**Opening:** `MainWindow.open_file(path)` records the path in
+`AppSettings.add_recent_file`, rebuilds the Recent Files submenu, creates a
+`FileViewer` instance, stores it in `_file_viewers` to prevent GC, connects
+`about_to_close` for cleanup and `open_file_requested` so drags within a
+viewer open additional viewers through `MainWindow`.
 
 **Loading:** `FileLoaderWorker` streams the file in 2,000-line chunks.
 `_on_chunk_ready` appends to `_raw_pane` (and to `_filtered_pane` if rules
-are active). `_on_load_complete` scrolls both panes to the bottom, then
-triggers a full filtered-pane rebuild and any pending find-bar search so they
-cover the complete file.
+are active). `_on_load_complete` records `_follow_pos = path.stat().st_size`,
+scrolls both panes to the bottom, then triggers a full filtered-pane rebuild
+and any pending find-bar search so they cover the complete file.
 
 **Display cap:** `_FILE_PANE_CAP = 2_000_000` — effectively unlimited for
 static files. The serial window's `buffer_cap` setting does not apply here.
 
-**Filter bar (Phase 2a):** Same `FilterBar` widget with `settings=None`
-(in-memory, not persisted). The toolbar `▽ Filter` action toggles it.
-`_rebuild_filtered_pane()` iterates all `_raw_pane` document blocks so it
-always covers the full loaded file.
+**Filter bar:** Same `FilterBar` widget with `settings=None` (in-memory, not
+persisted). The toolbar `▽ Filter` action toggles it. `_rebuild_filtered_pane()`
+iterates all `_raw_pane` document blocks so it always covers the full loaded file.
 
-**Find bar (Phase 2b):** `FindBar` docked at the bottom, hidden until Ctrl+F.
-Search uses `QTextDocument.find()` to iterate the full loaded document —
-operates on all lines, not just the visible portion. 300ms debounce on text
-input. Highlights:
+**Find bar:** `FindBar` docked at the bottom, hidden until Ctrl+F. Search uses
+`QTextDocument.find()` to iterate the full loaded document — operates on all
+lines, not just the visible portion. 300ms debounce on text input. Highlights:
 - Non-current matches: `QTextEdit.ExtraSelection` with dark amber background
   (`#443900`). Capped at `_MAX_HIGHLIGHTS = 5000` ExtraSelections for
   performance, centered around the current match.
@@ -203,6 +224,17 @@ input. Highlights:
   `ensureCursorVisible()` + scrollbar centering.
 Navigation wraps. "Filter to matches" calls `FilterBar.add_rule()` with the
 current search text as a substring include rule.
+
+**Follow (tail) mode:** "Follow" checkable toolbar action (default off).
+When enabled, `QFileSystemWatcher` monitors the file for changes. On
+`fileChanged`, new bytes are read from `_follow_pos` (byte offset after last
+read) into `_tail_buffer` to handle partial lines, then complete lines are
+appended to both panes. If the user scrolls up, `_follow_paused` is set and
+a "⬇ Resume" toolbar action appears; scrolling back to the bottom or clicking
+Resume clears the pause. `_programmatic_scroll` flag prevents spurious pause
+detection when the code scrolls to bottom. `QFileSystemWatcher` is cleaned up
+in `closeEvent` and the path is re-added if the watcher drops it (some
+platforms remove the watch after the first change event).
 
 **Signals:** `about_to_close` (for `MainWindow` cleanup),
 `open_file_requested(Path)` (for drag-drops inside the viewer).
@@ -218,8 +250,10 @@ input row) and `⚙ Settings` (checkable, toggles sidebar). Central widget
 uses `QHBoxLayout`: left side holds `FilterBar` at top, then `SerialPanel`,
 then the vertical splitter (stretch=1); right side is `SettingsSidebar`
 (fixed 280 px, hidden when collapsed). Menu bar has a `File` menu with
-`Open Log File…` (Ctrl+O). Window geometry and splitter state are saved to
-`AppSettings` on close and restored on startup.
+`Open Log File…` (Ctrl+O), a `Recent Files` submenu (last 10 paths, greyed
+out if the file no longer exists), and a `Help` menu with `About Logulator`.
+Window geometry and splitter state are saved to `AppSettings` on close and
+restored on startup.
 
 **Filter bar:** `FilterBar(self._settings)` persists rules, mode, and
 input-bar open/closed state. The `▽ Filter` toolbar action is kept in sync
@@ -271,9 +305,11 @@ both panes simultaneously.
 **Clearing the display:** `_on_clear()` clears both panes and resets
 `_line_count`. Does not affect the log file.
 
-**File viewers:** `open_file(path)` creates a `FileViewer`, stores it in
-`_file_viewers`, and connects `about_to_close` / `open_file_requested`.
-`_on_viewer_closed` removes closed viewers from the list.
+**File viewers:** `open_file(path)` calls `AppSettings.add_recent_file`,
+rebuilds `_recent_menu`, creates a `FileViewer`, stores it in `_file_viewers`,
+and connects `about_to_close` / `open_file_requested`. `_on_viewer_closed`
+removes closed viewers from the list. `_rebuild_recent_menu()` repopulates
+`_recent_menu` from `AppSettings.recent_files()` each time a file is opened.
 
 **Lifecycle:** `_on_connect` opens a new log session, resets line count and
 connect time, starts the worker and the status timer. `_on_disconnect(prompt_clear)`
@@ -332,6 +368,15 @@ Implementation complete and tested on macOS. All core features working:
 - File viewer find bar (Ctrl+F): text search with Enter/Shift+Enter navigation,
   match counter, non-current match highlights (amber ExtraSelections), current
   match highlight (blue selection), "Filter to matches" button
+- Versioning: `pyproject.toml` defines version 0.1.0; `app/version.py` exposes
+  `__version__` via `importlib.metadata`, falls back to `"dev"` from source
+- Recent Files submenu (File menu): last 10 opened files, most-recent-first,
+  greyed out if no longer on disk; persisted via `AppSettings`
+- Help → About Logulator dialog: icon, version, description, MIT license,
+  GitHub link, † Soli Deo Gloria
+- File viewer Follow mode: "Follow" toolbar toggle tails live-appended content
+  via `QFileSystemWatcher`; scrolling up pauses following with a "⬇ Resume"
+  button; scrolling back to bottom resumes automatically
 
 **Under investigation:**
 - Possible bug where disconnecting and reconnecting reuses the same log
@@ -360,3 +405,8 @@ Implementation complete and tested on macOS. All core features working:
 - `filter_engine.py` is stateless and must remain untouched.
 - The .venv is Python 3.9 despite the 3.11+ requirement. Avoid new-style
   union type hints (`X | Y`) until the venv is upgraded.
+- File viewer Follow mode reads new content in binary mode and tracks a byte
+  offset (`_follow_pos`). `QFileSystemWatcher` may drop the watch path after
+  the first change event on some platforms — `_on_file_changed` re-adds it.
+- `app/version.py` returns `"dev"` unless the package is pip-installed.
+  `pyproject.toml` is the single source of truth for the version number.

@@ -6,12 +6,13 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont, QKeySequence, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QAction, QFont, QKeySequence, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QSplitter,
     QVBoxLayout,
@@ -91,6 +92,14 @@ class MainWindow(QMainWindow):
         open_action = file_menu.addAction("Open Log File…")
         open_action.setShortcut(QKeySequence("Ctrl+O"))
         open_action.triggered.connect(self._on_open_file)
+        file_menu.addSeparator()
+        self._recent_menu = file_menu.addMenu("Recent Files")
+        self._rebuild_recent_menu()
+
+        # Help menu
+        help_menu = self.menuBar().addMenu("Help")
+        about_action = help_menu.addAction("About Logulator")
+        about_action.triggered.connect(self._on_about)
 
         # Toolbar
         toolbar = self.addToolBar("Main")
@@ -370,8 +379,31 @@ class MainWindow(QMainWindow):
         if path:
             self.open_file(Path(path))
 
+    def _on_about(self) -> None:
+        from app.ui.about_dialog import AboutDialog
+        dlg = AboutDialog(self)
+        dlg.exec()
+
+    def _rebuild_recent_menu(self) -> None:
+        self._recent_menu.clear()
+        paths = self._settings.recent_files()
+        if not paths:
+            no_action = self._recent_menu.addAction("(none)")
+            no_action.setEnabled(False)
+            return
+        for p in paths:
+            path = Path(p)
+            action = QAction(str(path), self)
+            if not path.exists():
+                action.setEnabled(False)
+            else:
+                action.triggered.connect(lambda checked=False, fp=path: self.open_file(fp))
+            self._recent_menu.addAction(action)
+
     def open_file(self, path: Path) -> None:
         from app.ui.file_viewer import FileViewer
+        self._settings.add_recent_file(path)
+        self._rebuild_recent_menu()
         viewer = FileViewer(self._settings, path)
         self._file_viewers.append(viewer)
         viewer.about_to_close.connect(lambda v=viewer: self._on_viewer_closed(v))
