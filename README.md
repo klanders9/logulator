@@ -50,6 +50,16 @@ To view a saved log file, use **File → Open Log File…** (Ctrl+O), drag a fil
 
 Session logs are saved under `logs/` and are never filtered or truncated by the UI. They are the source of truth for all captured output.
 
+## Linux desktop integration (Ubuntu / GNOME)
+
+To get the app icon in the GNOME panel, run the install script once after cloning (re-run if you move the repo):
+
+```bash
+bash install-desktop.sh
+```
+
+This writes `~/.local/share/applications/logulator.desktop` and installs the icon to the hicolor theme. It uses the venv's installed `logulator` script if present, otherwise falls back to running `main.py` directly.
+
 ## Platform notes
 
 | Platform | Expected port names |

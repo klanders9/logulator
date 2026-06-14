@@ -410,3 +410,9 @@ Implementation complete and tested on macOS. All core features working:
   the first change event on some platforms — `_on_file_changed` re-adds it.
 - `app/version.py` returns `"dev"` unless the package is pip-installed.
   `pyproject.toml` is the single source of truth for the version number.
+- Linux desktop integration (GNOME panel icon) requires a `.desktop` file with
+  `StartupWMClass=logulator` and `app.setDesktopFileName("logulator")` in
+  `main.py`. `install-desktop.sh` handles this for venv-based workflows; it
+  writes absolute paths into `~/.local/share/applications/logulator.desktop`
+  and copies the icon to the hicolor theme. `pip install --user .` does not
+  work inside a venv (pip disables it); use the script instead.
