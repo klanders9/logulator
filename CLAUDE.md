@@ -110,8 +110,8 @@ of connection state. Emits `connect_requested(port, baud)`,
 Wraps `QSettings` (org: `logulator`, app: `logulator`) with typed
 getters/setters and hardcoded defaults. Covers: window geometry, splitter
 state, sidebar open/closed, colorization settings (enabled, mode, apply-to,
-per-level colors, per-syntax-field colors), buffer cap, filter state, and
-recent files.
+per-level colors, per-syntax-field colors), buffer cap, filter state, recent
+files, and app theme.
 All future persistent settings go through this class.
 
 Buffer cap: `buffer_cap() -> int` / `set_buffer_cap(val: int)`. Default
@@ -126,6 +126,10 @@ Recent files:
 - `recent_files() -> list` — ordered list of path strings, most recent first.
   Stored as JSON under `files/recent`.
 - `add_recent_file(path)` — prepends `path`, deduplicates, caps at 10 entries.
+
+Theme:
+- `theme() -> str` / `set_theme(val: str)` — `'dracula'` or `'vscode'`.
+  Stored under `app/theme`. Default `'dracula'`.
 
 ### `app/colorizer.py` — `Colorizer`
 Reads settings from `AppSettings` and converts a log line string into a list
@@ -160,6 +164,9 @@ Default colors (Dracula-inspired palette):
 Fixed-width (280 px) collapsible panel shown on the right side of
 `MainWindow`. Contains:
 
+- **Appearance:** theme dropdown ("Dracula" / "VS Code Dark"). Emits
+  `theme_changed(str)` with the internal key (`'dracula'`/`'vscode'`).
+  Change takes effect immediately via `apply_palette` — no restart needed.
 - **Display / Colorization:** enable checkbox, mode selector (Level/Syntax),
   apply-to selector (All panes / Raw log only / Filtered log only / None),
   and color-picker rows for all seven configurable colors. Each color row
@@ -328,22 +335,35 @@ stops the timer, stops the worker, closes the log. When `prompt_clear=True`
 display. `closeEvent` saves geometry/splitter state, then calls
 `_on_disconnect(prompt_clear=False)`.
 
-### `app/theme.py` — `apply_dark_palette`
-Applies the Fusion Qt style and a Dracula-aligned `QPalette` to the
-`QApplication`. Called unconditionally on all platforms from `main.py`.
+### `app/theme.py` — `apply_palette`
+Applies the Fusion Qt style and a named `QPalette` to the `QApplication`.
+Two themes are available; both are applied on all platforms.
 
-Key colors: window/panel bg `#282a36`, input bg `#21222c`, buttons/surfaces
-`#44475a`, primary text `#f8f8f2`, disabled text `#6272a4`, selection
-`#1a5fa8` (matches log pane stylesheet), links `#8be9fd`. Disabled-state
-colors are set separately via `QPalette.ColorGroup.Disabled`. Log panes are
-unaffected — they keep their own explicit `#000000` background via
-`_PANE_STYLE`, which intentionally sits darker than the `#282a36` chrome.
+`apply_palette(app, theme)` — dispatch entry point. `theme` is `'dracula'`
+or `'vscode'`; falls back to Dracula for unknown values.
+
+**Dracula** (`'dracula'`): window/panel bg `#282a36`, input bg `#21222c`,
+buttons/surfaces `#44475a`, primary text `#f8f8f2`, disabled text `#6272a4`,
+selection `#1a5fa8`, links `#8be9fd`.
+
+**VS Code Dark+** (`'vscode'`): window/panel bg `#252526`, input bg
+`#1e1e1e`, buttons/surfaces `#3a3d41`, primary text `#d4d4d4`, disabled
+text `#858585`, selection `#264f78`, links `#4fc1ff`. The darker base
+(`#1e1e1e`) gives more contrast between the splitter handle and the `#000000`
+log pane backgrounds than Dracula does.
+
+Both themes set disabled-state colors separately via `QPalette.ColorGroup.Disabled`
+and configure the Fusion 3-D shading roles (`Light`/`Midlight`/`Mid`/`Dark`/`Shadow`)
+for button bevels. Log panes are unaffected — they keep their own explicit
+`#000000` background via `_PANE_STYLE`.
 
 ### `main.py`
 `QApplication` entry point. Run with `.venv/bin/python main.py`. Loads
 `icon.png` from the repo root (if present) and sets it as the app icon via
-`QIcon`. Calls `apply_dark_palette(app)` unconditionally so the Dracula theme
-is consistent across macOS, Linux, and Windows.
+`QIcon`. Reads the persisted theme key directly from `QSettings` (before
+`MainWindow` is constructed) and calls `apply_palette(app, theme)` so the
+Fusion style and palette are applied before any widgets are created.
+`MainWindow` handles live theme switching via `SettingsSidebar.theme_changed`.
 
 ## Supported Log Formats
 
@@ -410,6 +430,8 @@ Implementation complete and tested on macOS. All core features working:
 - File viewer Follow mode: "Follow" toolbar toggle tails live-appended content
   via `QFileSystemWatcher`; scrolling up pauses following with a "⬇ Resume"
   button; scrolling back to bottom resumes automatically
+- User-selectable app theme (Dracula / VS Code Dark) in the settings sidebar
+  Appearance section; persisted via `AppSettings`; switches live without restart
 
 **Under investigation:**
 - Possible bug where disconnecting and reconnecting reuses the same log

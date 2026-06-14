@@ -16,6 +16,7 @@ A cross-platform desktop GUI for monitoring and filtering serial log output.
 - File viewer: filter bar, inline find (Ctrl+F), and **Follow mode** to tail live-appended files
 - Recent Files submenu (last 10 opened files, greyed out if unavailable)
 - Help → About dialog with version, license, and GitHub link
+- User-selectable app theme (Dracula or VS Code Dark) in the settings sidebar; switches live
 
 ## Requirements
 

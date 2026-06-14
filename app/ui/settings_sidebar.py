@@ -24,10 +24,14 @@ from app.settings import AppSettings
 _APPLY_LABELS = ["All panes", "Raw log only", "Filtered log only", "None"]
 _APPLY_VALUES = ["all", "raw", "filtered", "none"]
 
+_THEME_LABELS = ["Dracula", "VS Code Dark"]
+_THEME_VALUES = ["dracula", "vscode"]
+
 
 class SettingsSidebar(QWidget):
     settings_changed = Signal()
     buffer_cap_changed = Signal(int)
+    theme_changed = Signal(str)
 
     def __init__(self, settings: AppSettings, parent=None):
         super().__init__(parent)
@@ -38,6 +42,21 @@ class SettingsSidebar(QWidget):
         layout = QVBoxLayout(content)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(6)
+
+        layout.addWidget(self._section_label("Appearance"))
+        theme_row = QHBoxLayout()
+        theme_row.addWidget(QLabel("Theme:"))
+        self._theme_combo = QComboBox()
+        self._theme_combo.addItems(_THEME_LABELS)
+        cur_theme = settings.theme()
+        self._theme_combo.setCurrentIndex(
+            _THEME_VALUES.index(cur_theme) if cur_theme in _THEME_VALUES else 0
+        )
+        self._theme_combo.currentIndexChanged.connect(
+            lambda i: self._on_theme_changed(_THEME_VALUES[i])
+        )
+        theme_row.addWidget(self._theme_combo, stretch=1)
+        layout.addLayout(theme_row)
 
         layout.addWidget(self._section_label("Display"))
         layout.addWidget(self._subsection_label("Colorization"))
@@ -149,6 +168,10 @@ class SettingsSidebar(QWidget):
         pick_btn.clicked.connect(pick)
         row.addWidget(pick_btn)
         return row
+
+    def _on_theme_changed(self, theme: str) -> None:
+        self._s.set_theme(theme)
+        self.theme_changed.emit(theme)
 
     def _on_enable_toggled(self, checked: bool) -> None:
         self._s.set_color_enabled(checked)

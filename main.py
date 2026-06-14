@@ -6,10 +6,12 @@
 import sys
 from pathlib import Path
 
+from PySide6.QtCore import QSettings
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from app.main_window import MainWindow
+from app.theme import apply_palette
 
 
 def main():
@@ -17,8 +19,11 @@ def main():
     app.setApplicationName("logulator")
     app.setDesktopFileName("logulator")
 
-    from app.theme import apply_dark_palette
-    apply_dark_palette(app)
+    _qs = QSettings("logulator", "logulator")
+    _theme = _qs.value("app/theme", "dracula")
+    if _theme not in ("dracula", "vscode"):
+        _theme = "dracula"
+    apply_palette(app, _theme)
 
     icon_path = Path(__file__).parent / "icon.png"
     if icon_path.exists():

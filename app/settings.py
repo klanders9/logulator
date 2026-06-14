@@ -151,3 +151,13 @@ class AppSettings:
             paths.remove(s)
         paths.insert(0, s)
         self._qs.setValue("files/recent", json.dumps(paths[: self._RECENT_MAX]))
+
+    # --- Theme ---
+
+    def theme(self) -> str:
+        v = self._qs.value("app/theme", "dracula")
+        return v if v in ("dracula", "vscode") else "dracula"
+
+    def set_theme(self, val: str) -> None:
+        if val in ("dracula", "vscode"):
+            self._qs.setValue("app/theme", val)

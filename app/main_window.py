@@ -8,6 +8,7 @@ from typing import List, Optional, Tuple
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QFont, QKeySequence, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from app import filter_engine
+from app.theme import apply_palette
 from app.colorizer import Colorizer
 from app.log_writer import LogWriter
 from app.serial_worker import SerialWorker
@@ -78,6 +80,7 @@ class MainWindow(QMainWindow):
         self._sidebar = SettingsSidebar(self._settings)
         self._sidebar.setVisible(self._settings.sidebar_open())
         self._sidebar.settings_changed.connect(self._on_settings_changed)
+        self._sidebar.theme_changed.connect(self._on_theme_changed)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -309,6 +312,9 @@ class MainWindow(QMainWindow):
         self._rebuild_raw_pane()
         if self._filtered_pane.isVisible():
             self._rebuild_filtered_pane()
+
+    def _on_theme_changed(self, theme: str):
+        apply_palette(QApplication.instance(), theme)
 
     def _on_filter_action_toggled(self, checked: bool):
         if checked != self._filter_bar.is_input_bar_open():
