@@ -17,6 +17,9 @@ def main():
     app.setApplicationName("logulator")
     app.setDesktopFileName("logulator")
 
+    from app.theme import apply_dark_palette
+    apply_dark_palette(app)
+
     icon_path = Path(__file__).parent / "icon.png"
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))

@@ -454,8 +454,10 @@ class FileViewer(QMainWindow):
 
     def _scroll_to_follow_bottom(self) -> None:
         self._programmatic_scroll = True
-        sb = self._raw_pane.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        for pane in (self._raw_pane, self._filtered_pane):
+            if pane.isVisible():
+                sb = pane.verticalScrollBar()
+                sb.setValue(sb.maximum())
         self._programmatic_scroll = False
 
     def _on_file_changed(self, path: str) -> None:
