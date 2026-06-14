@@ -214,9 +214,10 @@ to `MainWindow` so closing the main window does not close them.
 
 **Opening:** `MainWindow.open_file(path)` records the path in
 `AppSettings.add_recent_file`, rebuilds the Recent Files submenu, creates a
-`FileViewer` instance, stores it in `_file_viewers` to prevent GC, connects
-`about_to_close` for cleanup and `open_file_requested` so drags within a
-viewer open additional viewers through `MainWindow`.
+`FileViewer` instance, stores it in `_file_viewers`, and connects
+`about_to_close` for cleanup. `FileViewer` also manages its own GC via a
+class-level `_instances` list — every instance adds itself on init and removes
+itself on close, so viewers survive even if no `MainWindow` holds a reference.
 
 **Loading:** `FileLoaderWorker` streams the file in 2,000-line chunks.
 `_on_chunk_ready` appends to `_raw_pane` (and to `_filtered_pane` if rules
@@ -253,8 +254,23 @@ detection when the code scrolls to bottom. `QFileSystemWatcher` is cleaned up
 in `closeEvent` and the path is re-added if the watcher drops it (some
 platforms remove the watch after the first change event).
 
-**Signals:** `about_to_close` (for `MainWindow` cleanup),
-`open_file_requested(Path)` (for drag-drops inside the viewer).
+**Toolbar:** "New Window" (opens a new serial connection window via
+`MainWindow.open_new()`), "Open File…" (Ctrl+O, file dialog → `open_file()`),
+"⚙ Settings" (opens a modeless `QDialog` wrapping `SettingsSidebar` — created
+once, re-raised on subsequent clicks; `buffer_cap_changed` is a no-op here
+since file viewers use `_FILE_PANE_CAP`), separator, then "▽ Filter",
+"Follow", "⬇ Resume".
+
+**File opening:** `open_file(path)` records in `AppSettings.add_recent_file`,
+creates and shows a new `FileViewer` (which self-registers in `_instances`).
+Drag-drops on either pane call `open_file` directly — no signal routing
+through `MainWindow`.
+
+**Settings:** `_on_settings_changed()` rebuilds both panes (same
+`setUpdatesEnabled` pattern as `MainWindow`). `_on_theme_changed()` calls
+`apply_palette(QApplication.instance(), theme)`.
+
+**Signals:** `about_to_close` (for `MainWindow` cleanup).
 
 **Colorization:** `_get_segments(line, pane)` follows the same logic as
 `MainWindow`, delegating to a `Colorizer` instance that reads live settings.
@@ -262,8 +278,9 @@ platforms remove the watch after the first change event).
 ### `app/main_window.py` — `MainWindow(QMainWindow)`
 Composes all panels. Key behaviors:
 
-**Layout:** Toolbar at top with `▽ Filter` (checkable, toggles `FilterBar`
-input row) and `⚙ Settings` (checkable, toggles sidebar). Central widget
+**Layout:** Toolbar at top with `New Window` (spawns a new `MainWindow` via
+`open_new()`), `▽ Filter` (checkable, toggles `FilterBar` input row), and
+`⚙ Settings` (checkable, toggles sidebar). Central widget
 uses `QHBoxLayout`: left side holds `FilterBar` at top, then `SerialPanel`,
 then the vertical splitter (stretch=1); right side is `SettingsSidebar`
 (fixed 280 px, hidden when collapsed). Menu bar has a `File` menu with
@@ -272,12 +289,10 @@ out if the file no longer exists), and a `Help` menu with `About Logulator`.
 Window geometry and splitter state are saved to `AppSettings` on close and
 restored on startup.
 
-**Filter bar:** `FilterBar(self._settings)` persists rules, mode, and
-input-bar open/closed state. The `▽ Filter` toolbar action is kept in sync
-with the bar's visibility (including Escape-to-close). On startup,
-`_on_filters_changed` is called with the persisted rules to restore filter
-state (show/hide filtered pane, rebuild from raw pane buffer which is empty
-at startup).
+**Filter bar:** `FilterBar()` (no settings — all state is in-memory, not
+persisted). The `▽ Filter` toolbar action is kept in sync with the bar's
+visibility (including Escape-to-close). On startup, `_on_filters_changed` is
+called with the empty initial rules (filtered pane stays hidden).
 
 **Display panes:** `_raw_pane` and `_filtered_pane` are `LogPane` instances
 (from `app/ui/log_pane.py`). Both panes emit `file_dropped(Path)` which is
@@ -323,11 +338,18 @@ both panes simultaneously.
 **Clearing the display:** `_on_clear()` clears both panes and resets
 `_line_count`. Does not affect the log file.
 
+**Multiple windows:** `_instances` class variable holds all open `MainWindow`
+instances (each appends on init, removes on close). `open_new()` classmethod
+creates and shows a new instance. The app quits when all top-level windows
+(MainWindows and FileViewers) are closed — Qt's default `lastWindowClosed`
+behavior.
+
 **File viewers:** `open_file(path)` calls `AppSettings.add_recent_file`,
 rebuilds `_recent_menu`, creates a `FileViewer`, stores it in `_file_viewers`,
-and connects `about_to_close` / `open_file_requested`. `_on_viewer_closed`
-removes closed viewers from the list. `_rebuild_recent_menu()` repopulates
-`_recent_menu` from `AppSettings.recent_files()` each time a file is opened.
+and connects `about_to_close`. `_on_viewer_closed` removes closed viewers from
+the list. `_rebuild_recent_menu()` repopulates `_recent_menu` from
+`AppSettings.recent_files()`; also connected to `file_menu.aboutToShow` so
+the menu is always fresh when opened.
 
 **Lifecycle:** `_on_connect` opens a new log session, resets line count and
 connect time, starts the worker and the status timer. `_on_disconnect(prompt_clear)`
@@ -395,9 +417,10 @@ Implementation complete and tested on macOS. All core features working:
 - Collapsible settings sidebar (⚙ Settings toolbar button); sidebar
   open/closed state persisted across launches
 - Persistent settings via QSettings: window geometry, splitter position,
-  sidebar state, all colorization preferences, filter rules/mode/bar-state
+  sidebar state, all colorization preferences
 - App icon loaded from icon.png at startup
-- Black/grey terminal-style display, configurable font size
+- Dark terminal-style display with theme-matched pane backgrounds and a
+  subtle 1px border (`#555555`) framing each pane; configurable font size
 - Status bar with log filename, runtime, line count, file size
 - Mutual exclusion of text selection between raw and filtered panes
 - Copy from either pane always produces plain text (never HTML)
@@ -410,10 +433,14 @@ Implementation complete and tested on macOS. All core features working:
   at the bottom; scrolling up pauses auto-scroll without any toggle
 - Compact filter bar: collapsible input row (▽ Filter toolbar button, Escape
   to close) + horizontal chip strip showing active rules; strip hidden when
-  no rules active; filter state persists across launches
-- File viewer: standalone window opened via File → Open Log File… (Ctrl+O) or
-  drag-and-drop onto any display pane; multiple viewers may be open
-  simultaneously; closing main window does not close viewers
+  no rules active; filter rules are in-memory only (not persisted)
+- Multiple serial connection windows: "New Window" toolbar button in all
+  windows spawns an additional independent serial monitor; each has its own
+  port, log writer, and display; app quits when all windows close
+- File viewer: standalone window opened via File → Open Log File… (Ctrl+O),
+  drag-and-drop onto any display pane, or "Open File…" toolbar button (Ctrl+O)
+  from within any file viewer; multiple viewers may be open simultaneously;
+  closing the serial window does not close viewers
 - File viewer uses chunked background loading (2,000 lines/chunk) so large
   files don't block the UI; filter and find operate on the full loaded content
 - File viewer filter bar: same compact design as main window; rules are
@@ -421,6 +448,8 @@ Implementation complete and tested on macOS. All core features working:
 - File viewer find bar (Ctrl+F): text search with Enter/Shift+Enter navigation,
   match counter, non-current match highlights (amber ExtraSelections), current
   match highlight (blue selection), "Filter to matches" button
+- File viewer settings: "⚙ Settings" toolbar button opens a modeless dialog
+  with the full settings sidebar (theme, colorization, buffer cap)
 - Versioning: `pyproject.toml` defines version 0.1.0; `app/version.py` exposes
   `__version__` via `importlib.metadata`, falls back to `"dev"` from source
 - Recent Files submenu (File menu): last 10 opened files, most-recent-first,

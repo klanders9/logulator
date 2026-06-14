@@ -15,6 +15,9 @@ from PySide6.QtGui import (
     QTextCursor,
 )
 from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QFileDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -51,8 +54,9 @@ _SEARCH_DEBOUNCE_MS = 300
 class FileViewer(QMainWindow):
     """Independent file viewer window. Multiple instances may coexist."""
 
+    _instances: list = []
+
     about_to_close = Signal()
-    open_file_requested = Signal(object)  # emits Path — so caller can open new viewers
 
     def __init__(self, settings: AppSettings, path: Path, parent=None):
         super().__init__(parent)
@@ -83,6 +87,9 @@ class FileViewer(QMainWindow):
         self._programmatic_scroll = False
         self._watcher = QFileSystemWatcher(self)
         self._watcher.fileChanged.connect(self._on_file_changed)
+
+        self._settings_dialog: Optional[QDialog] = None
+        FileViewer._instances.append(self)
 
         self.setWindowTitle(path.name)
         self.resize(1100, 700)
@@ -122,6 +129,19 @@ class FileViewer(QMainWindow):
         toolbar = self.addToolBar("FileViewer")
         toolbar.setMovable(False)
         toolbar.setFloatable(False)
+
+        new_win_action = toolbar.addAction("New Window")
+        new_win_action.triggered.connect(self._on_new_connection)
+
+        open_file_action = toolbar.addAction("Open File…")
+        open_file_action.setShortcut(QKeySequence("Ctrl+O"))
+        open_file_action.triggered.connect(self._on_open_file_action)
+
+        settings_action = toolbar.addAction("⚙ Settings")
+        settings_action.triggered.connect(self._on_settings_action)
+
+        toolbar.addSeparator()
+
         self._filter_action = toolbar.addAction("▽ Filter")
         self._filter_action.setCheckable(True)
         self._filter_action.toggled.connect(self._on_filter_action_toggled)
@@ -151,8 +171,8 @@ class FileViewer(QMainWindow):
         self._raw_pane.selectionChanged.connect(self._on_raw_selection_changed)
         self._filtered_pane.selectionChanged.connect(self._on_filtered_selection_changed)
         self._filtered_pane.line_double_clicked.connect(self._jump_to_raw_line)
-        self._raw_pane.file_dropped.connect(lambda p: self.open_file_requested.emit(p))
-        self._filtered_pane.file_dropped.connect(lambda p: self.open_file_requested.emit(p))
+        self._raw_pane.file_dropped.connect(self.open_file)
+        self._filtered_pane.file_dropped.connect(self.open_file)
 
         self._find_bar.text_changed.connect(self._on_find_text_changed)
         self._find_bar.go_next.connect(self._on_find_next)
@@ -517,6 +537,68 @@ class FileViewer(QMainWindow):
         self._scroll_to_follow_bottom()
 
     # ------------------------------------------------------------------
+    # File opening / new window / settings
+    # ------------------------------------------------------------------
+
+    def open_file(self, path: Path) -> None:
+        self._settings.add_recent_file(path)
+        viewer = FileViewer(self._settings, path)
+        viewer.show()
+
+    def _on_open_file_action(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Log File", "", "Log files (*.log *.txt);;All files (*)"
+        )
+        if path:
+            self.open_file(Path(path))
+
+    def _on_new_connection(self) -> None:
+        from app.main_window import MainWindow
+        MainWindow.open_new()
+
+    def _on_settings_action(self) -> None:
+        if self._settings_dialog is None:
+            from app.ui.settings_sidebar import SettingsSidebar
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Settings")
+            dlg.resize(300, 520)
+            layout = QVBoxLayout(dlg)
+            layout.setContentsMargins(0, 0, 0, 0)
+            sidebar = SettingsSidebar(self._settings)
+            sidebar.settings_changed.connect(self._on_settings_changed)
+            sidebar.theme_changed.connect(self._on_theme_changed)
+            sidebar.buffer_cap_changed.connect(lambda _: None)
+            layout.addWidget(sidebar)
+            self._settings_dialog = dlg
+        self._settings_dialog.show()
+        self._settings_dialog.raise_()
+        self._settings_dialog.activateWindow()
+
+    def _on_settings_changed(self) -> None:
+        self._rebuild_raw_pane()
+        if self._filtered_pane.isVisible():
+            self._rebuild_filtered_pane()
+
+    def _on_theme_changed(self, theme: str) -> None:
+        from app.theme import apply_palette
+        apply_palette(QApplication.instance(), theme)
+
+    def _rebuild_raw_pane(self) -> None:
+        doc = self._raw_pane.document()
+        block = doc.begin()
+        lines = []
+        while block != doc.end():
+            lines.append(block.text())
+            block = block.next()
+        self._raw_pane.setUpdatesEnabled(False)
+        self._raw_pane.clear()
+        for line in lines:
+            self._raw_pane.append_line(self._get_segments(line, "raw"), scroll=False)
+        self._raw_pane.setUpdatesEnabled(True)
+        sb = self._raw_pane.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
@@ -528,4 +610,6 @@ class FileViewer(QMainWindow):
             self._worker.cancel()
             self._worker.wait(500)
         self.about_to_close.emit()
+        if self in FileViewer._instances:
+            FileViewer._instances.remove(self)
         super().closeEvent(event)

@@ -35,6 +35,8 @@ _DEFAULT_FONT_SIZE = 12
 
 
 class MainWindow(QMainWindow):
+    _instances: list = []
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("logulator")
@@ -52,6 +54,7 @@ class MainWindow(QMainWindow):
         self._connect_time: Optional[datetime] = None
         self._splitter_initialized = False
         self._file_viewers: list = []
+        MainWindow._instances.append(self)
 
         # --- Build UI ---
         font = QFont("Menlo")
@@ -67,7 +70,7 @@ class MainWindow(QMainWindow):
         self._splitter.addWidget(self._filtered_pane)
 
         self._serial_panel = SerialPanel()
-        self._filter_bar = FilterBar(self._settings)
+        self._filter_bar = FilterBar()
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
@@ -98,6 +101,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         self._recent_menu = file_menu.addMenu("Recent Files")
         self._rebuild_recent_menu()
+        file_menu.aboutToShow.connect(self._rebuild_recent_menu)
 
         # Help menu
         help_menu = self.menuBar().addMenu("Help")
@@ -108,9 +112,11 @@ class MainWindow(QMainWindow):
         toolbar = self.addToolBar("Main")
         toolbar.setMovable(False)
         toolbar.setFloatable(False)
+        new_win_action = toolbar.addAction("New Window")
+        new_win_action.triggered.connect(MainWindow.open_new)
         self._filter_action = toolbar.addAction("▽ Filter")
         self._filter_action.setCheckable(True)
-        self._filter_action.setChecked(self._settings.filter_bar_open())
+        self._filter_action.setChecked(False)
         self._filter_action.toggled.connect(self._on_filter_action_toggled)
         self._settings_action = toolbar.addAction("⚙  Settings")
         self._settings_action.setCheckable(True)
@@ -413,8 +419,12 @@ class MainWindow(QMainWindow):
         viewer = FileViewer(self._settings, path)
         self._file_viewers.append(viewer)
         viewer.about_to_close.connect(lambda v=viewer: self._on_viewer_closed(v))
-        viewer.open_file_requested.connect(self.open_file)
         viewer.show()
+
+    @classmethod
+    def open_new(cls) -> None:
+        w = cls()
+        w.show()
 
     def _on_viewer_closed(self, viewer) -> None:
         if viewer in self._file_viewers:
@@ -424,6 +434,8 @@ class MainWindow(QMainWindow):
         self._settings.save_geometry(self.saveGeometry())
         self._settings.save_splitter(self._splitter.saveState())
         self._on_disconnect(prompt_clear=False)
+        if self in MainWindow._instances:
+            MainWindow._instances.remove(self)
         super().closeEvent(event)
 
 

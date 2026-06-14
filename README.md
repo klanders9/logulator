@@ -12,11 +12,12 @@ A cross-platform desktop GUI for monitoring and filtering serial log output.
 - Syntax colorization with configurable per-level and per-field colors; understands Zephyr, syslog (traditional and ISO 8601), and generic keyword-based severity detection
 - Smart scroll: auto-scrolls to new output only when already at the bottom
 - Double-click a line in the filtered pane to jump to and select it in the raw pane
-- Open log files in standalone viewer windows (File → Open Log File… or drag-and-drop)
-- File viewer: filter bar, inline find (Ctrl+F), and **Follow mode** to tail live-appended files
+- Multiple serial connection windows: **New Window** toolbar button opens an additional independent monitor on any port
+- Open log files in standalone viewer windows (File → Open Log File…, drag-and-drop, or **Open File…** in any viewer toolbar)
+- File viewer: filter bar, inline find (Ctrl+F), **Follow mode** to tail live-appended files, and **⚙ Settings** dialog
 - Recent Files submenu (last 10 opened files, greyed out if unavailable)
 - Help → About dialog with version, license, and GitHub link
-- User-selectable app theme (Dracula or VS Code Dark) in the settings sidebar; switches live
+- User-selectable app theme (Dracula or VS Code Dark) in the settings sidebar; switches live; theme-matched pane backgrounds
 
 ## Requirements
 
@@ -45,7 +46,9 @@ python main.py
 4. Choose **include** or **exclude** per rule, and toggle **AND/OR** to control how include rules combine
 5. Click **Disconnect** or close the window to end the session
 
-To view a saved log file, use **File → Open Log File…** (Ctrl+O), drag a file onto either display pane, or pick from **File → Recent Files**. Enable **Follow** in the file viewer toolbar to tail a file that is still being written to; scrolling up pauses following and a **⬇ Resume** button appears to jump back to the bottom.
+To monitor multiple serial ports simultaneously, click **New Window** in the toolbar to open an additional independent connection window.
+
+To view a saved log file, use **File → Open Log File…** (Ctrl+O), drag a file onto either display pane, pick from **File → Recent Files**, or click **Open File…** in any file viewer's toolbar. Enable **Follow** in the file viewer toolbar to tail a file that is still being written to; scrolling up pauses following and a **⬇ Resume** button appears to jump back to the bottom. Click **⚙ Settings** in the file viewer toolbar to adjust colorization and theme without returning to the serial window.
 
 ## Log files
 
