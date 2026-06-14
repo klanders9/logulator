@@ -11,9 +11,7 @@ from PySide6.QtWidgets import QTextEdit
 _DEFAULT_CAP = 100_000
 _PANE_STYLE = (
     "QTextEdit {"
-    "  background-color: #000000;"
     "  color: #cccccc;"
-    "  selection-background-color: #1a5fa8;"
     "}"
 )
 _PLAIN_COLOR = "#cccccc"

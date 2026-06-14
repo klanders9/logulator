@@ -295,8 +295,9 @@ connected to `MainWindow.open_file()`.
   `_rebuild_raw_pane()` and (if visible) `_rebuild_filtered_pane()` to
   recolor all displayed lines. Both rebuilds use `setUpdatesEnabled(False)`
   to suppress flicker.
-- Both panes: black background (`#000000`), grey default text (`#cccccc`),
-  selection highlight (`#1a5fa8`), monospace font (Menlo).
+- Both panes: background and selection color inherit from `QPalette.Base` /
+  `QPalette.Highlight` (theme-aware — no hardcoded `#000000`), grey default
+  text (`#cccccc`), monospace font (Menlo).
 - Selection is mutually exclusive between panes: starting a selection in one
   clears any selection in the other. Implemented via `selectionChanged`
   signals with `blockSignals(True/False)` around the clear.
@@ -348,14 +349,13 @@ selection `#1a5fa8`, links `#8be9fd`.
 
 **VS Code Dark+** (`'vscode'`): window/panel bg `#252526`, input bg
 `#1e1e1e`, buttons/surfaces `#3a3d41`, primary text `#d4d4d4`, disabled
-text `#858585`, selection `#264f78`, links `#4fc1ff`. The darker base
-(`#1e1e1e`) gives more contrast between the splitter handle and the `#000000`
-log pane backgrounds than Dracula does.
+text `#858585`, selection `#264f78`, links `#4fc1ff`.
 
 Both themes set disabled-state colors separately via `QPalette.ColorGroup.Disabled`
 and configure the Fusion 3-D shading roles (`Light`/`Midlight`/`Mid`/`Dark`/`Shadow`)
-for button bevels. Log panes are unaffected — they keep their own explicit
-`#000000` background via `_PANE_STYLE`.
+for button bevels. Log pane backgrounds and selection colors follow
+`QPalette.Base` / `QPalette.Highlight` so they update automatically when the
+theme switches — Dracula panes use `#21222c`, VS Code panes use `#1e1e1e`.
 
 ### `main.py`
 `QApplication` entry point. Run with `.venv/bin/python main.py`. Loads
