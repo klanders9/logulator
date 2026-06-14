@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from typing import Optional as _Optional
+
 from app.settings import AppSettings
 
 _CHIP_INCLUDE_STYLE = (
@@ -78,11 +80,21 @@ class FilterBar(QWidget):
     filters_changed = Signal(list, str)  # (rules, mode)
     input_bar_closed = Signal()  # emitted when Escape dismisses the input bar
 
-    def __init__(self, settings: AppSettings, parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        settings: _Optional[AppSettings] = None,
+        parent: Optional[QWidget] = None,
+    ):
         super().__init__(parent)
         self._settings = settings
-        self._rules: list = settings.filter_rules()
-        self._mode: str = settings.filter_mode()
+        if settings is not None:
+            self._rules: list = settings.filter_rules()
+            self._mode: str = settings.filter_mode()
+            _input_bar_open = settings.filter_bar_open()
+        else:
+            self._rules = []
+            self._mode = "OR"
+            _input_bar_open = False
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -120,7 +132,7 @@ class FilterBar(QWidget):
         ir.addWidget(self._mode_btn)
         ir.addWidget(add_btn)
 
-        self._input_row.setVisible(settings.filter_bar_open())
+        self._input_row.setVisible(_input_bar_open)
 
         # ---- Horizontal chip strip ----
         self._chip_container = QWidget()
@@ -161,7 +173,8 @@ class FilterBar(QWidget):
 
     def _close_input_bar(self):
         self._input_row.setVisible(False)
-        self._settings.set_filter_bar_open(False)
+        if self._settings is not None:
+            self._settings.set_filter_bar_open(False)
         self.input_bar_closed.emit()
 
     # ---- Public API ----
@@ -171,7 +184,8 @@ class FilterBar(QWidget):
             self._close_input_bar()
         else:
             self._input_row.setVisible(True)
-            self._settings.set_filter_bar_open(True)
+            if self._settings is not None:
+                self._settings.set_filter_bar_open(True)
             self._input.setFocus()
             self._input.selectAll()
 
@@ -206,14 +220,22 @@ class FilterBar(QWidget):
     def _on_mode_toggled(self, checked: bool):
         self._mode = "AND" if checked else "OR"
         self._mode_btn.setText(f"Mode: {self._mode}")
-        self._settings.set_filter_mode(self._mode)
+        if self._settings is not None:
+            self._settings.set_filter_mode(self._mode)
         self.filters_changed.emit(list(self._rules), self._mode)
 
     def _commit(self):
-        self._settings.set_filter_rules(self._rules)
+        if self._settings is not None:
+            self._settings.set_filter_rules(self._rules)
         self._rebuild_chips()
         self._chip_scroll.setVisible(bool(self._rules))
         self.filters_changed.emit(list(self._rules), self._mode)
+
+    def add_rule(self, value: str, rule_type: str = "substring", mode: str = "include") -> None:
+        """Programmatically add a rule (e.g. from the find bar's 'Filter to matches')."""
+        rule = {"type": rule_type, "value": value, "mode": mode}
+        self._rules.append(rule)
+        self._commit()
 
     def _rebuild_chips(self):
         # Remove all chips, preserving the trailing stretch (last item)

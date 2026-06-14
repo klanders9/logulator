@@ -2,17 +2,18 @@
 """Top-level QMainWindow. Composes SerialPanel, FilterBar, and the display panes."""
 
 from datetime import datetime
+from pathlib import Path
 from typing import List, Optional, Tuple
 
-from PySide6.QtCore import QMimeData, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QFont, QKeySequence, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
     QSplitter,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -23,83 +24,11 @@ from app.log_writer import LogWriter
 from app.serial_worker import SerialWorker
 from app.settings import AppSettings
 from app.ui.filter_bar import FilterBar
+from app.ui.log_pane import LogPane, _fmt, _PANE_STYLE, _PLAIN_COLOR, _DEFAULT_CAP, make_pane
 from app.ui.serial_panel import SerialPanel
 from app.ui.settings_sidebar import SettingsSidebar
 
-_DEFAULT_CAP = 100_000
 _DEFAULT_FONT_SIZE = 12
-_PANE_STYLE = (
-    "QTextEdit {"
-    "  background-color: #000000;"
-    "  color: #cccccc;"
-    "  selection-background-color: #1a5fa8;"
-    "}"
-)
-_PLAIN_COLOR = "#cccccc"
-
-
-class LogPane(QTextEdit):
-    """QTextEdit subclass that: (a) copies as plain text only,
-    (b) enforces a configurable line cap via append_line(), and
-    (c) emits line_double_clicked(str) on double-click."""
-
-    line_double_clicked = Signal(str)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._cap = _DEFAULT_CAP
-
-    def set_cap(self, new_cap: int) -> None:
-        self._cap = new_cap
-        doc = self.document()
-        while doc.blockCount() > self._cap:
-            trim = QTextCursor(doc)
-            trim.movePosition(QTextCursor.MoveOperation.Start)
-            trim.movePosition(QTextCursor.MoveOperation.NextBlock, QTextCursor.MoveMode.KeepAnchor)
-            trim.removeSelectedText()
-
-    def mouseDoubleClickEvent(self, event) -> None:
-        cursor = self.cursorForPosition(event.pos())
-        line = cursor.block().text()
-        super().mouseDoubleClickEvent(event)
-        if line:
-            self.line_double_clicked.emit(line)
-
-    def createMimeData(self, selection) -> QMimeData:
-        mime = QMimeData()
-        mime.setText(selection.toPlainText())
-        return mime
-
-    def append_line(self, segments: List[Tuple[str, QTextCharFormat]], scroll: bool = True) -> None:
-        sb = self.verticalScrollBar()
-        was_at_bottom = sb.value() >= sb.maximum() - 4
-
-        doc = self.document()
-        is_empty = doc.blockCount() == 1 and doc.lastBlock().text() == ""
-
-        cursor = QTextCursor(doc)
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        if not is_empty:
-            cursor.insertBlock()
-        for text, fmt in segments:
-            cursor.insertText(text, fmt)
-
-        while doc.blockCount() > self._cap:
-            trim = QTextCursor(doc)
-            trim.movePosition(QTextCursor.MoveOperation.Start)
-            trim.movePosition(QTextCursor.MoveOperation.NextBlock, QTextCursor.MoveMode.KeepAnchor)
-            trim.removeSelectedText()
-
-        if scroll and was_at_bottom:
-            sb.setValue(sb.maximum())
-
-
-def _make_pane(font: QFont) -> LogPane:
-    pane = LogPane()
-    pane.setReadOnly(True)
-    pane.setStyleSheet(_PANE_STYLE)
-    pane.setFont(font)
-    return pane
 
 
 class MainWindow(QMainWindow):
@@ -119,14 +48,15 @@ class MainWindow(QMainWindow):
         self._line_count = 0
         self._connect_time: Optional[datetime] = None
         self._splitter_initialized = False
+        self._file_viewers: list = []
 
         # --- Build UI ---
         font = QFont("Menlo")
         font.setStyleHint(QFont.StyleHint.Monospace)
         font.setPointSize(_DEFAULT_FONT_SIZE)
 
-        self._raw_pane = _make_pane(font)
-        self._filtered_pane = _make_pane(font)
+        self._raw_pane = make_pane(font)
+        self._filtered_pane = make_pane(font)
         self._filtered_pane.hide()
 
         self._splitter = QSplitter(Qt.Orientation.Vertical)
@@ -155,6 +85,12 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(4)
         main_layout.addWidget(left, stretch=1)
         main_layout.addWidget(self._sidebar)
+
+        # File menu
+        file_menu = self.menuBar().addMenu("File")
+        open_action = file_menu.addAction("Open Log File…")
+        open_action.setShortcut(QKeySequence("Ctrl+O"))
+        open_action.triggered.connect(self._on_open_file)
 
         # Toolbar
         toolbar = self.addToolBar("Main")
@@ -186,6 +122,8 @@ class MainWindow(QMainWindow):
         self._serial_panel.clear_requested.connect(self._on_clear)
         self._filter_bar.filters_changed.connect(self._on_filters_changed)
         self._filter_bar.input_bar_closed.connect(self._on_filter_bar_closed)
+        self._raw_pane.file_dropped.connect(self.open_file)
+        self._filtered_pane.file_dropped.connect(self.open_file)
         self._raw_pane.selectionChanged.connect(self._on_raw_pane_selection_changed)
         self._filtered_pane.selectionChanged.connect(self._on_filtered_pane_selection_changed)
         self._filtered_pane.line_double_clicked.connect(self._jump_to_raw_line)
@@ -421,6 +359,29 @@ class MainWindow(QMainWindow):
             f"Runtime: {runtime}  |  Lines: {self._line_count:,}  |  Size: {size_str}"
         )
 
+    # ------------------------------------------------------------------
+    # File viewer
+    # ------------------------------------------------------------------
+
+    def _on_open_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Log File", "", "Log files (*.log *.txt);;All files (*)"
+        )
+        if path:
+            self.open_file(Path(path))
+
+    def open_file(self, path: Path) -> None:
+        from app.ui.file_viewer import FileViewer
+        viewer = FileViewer(self._settings, path)
+        self._file_viewers.append(viewer)
+        viewer.about_to_close.connect(lambda v=viewer: self._on_viewer_closed(v))
+        viewer.open_file_requested.connect(self.open_file)
+        viewer.show()
+
+    def _on_viewer_closed(self, viewer) -> None:
+        if viewer in self._file_viewers:
+            self._file_viewers.remove(viewer)
+
     def closeEvent(self, event):
         self._settings.save_geometry(self.saveGeometry())
         self._settings.save_splitter(self._splitter.saveState())
@@ -428,7 +389,3 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
-def _fmt(hex_color: str) -> QTextCharFormat:
-    f = QTextCharFormat()
-    f.setForeground(QColor(hex_color))
-    return f

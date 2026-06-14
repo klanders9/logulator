@@ -47,11 +47,46 @@ Rule types:
 always win regardless of mode. If there are no include rules, all lines pass
 (subject to excludes).
 
+### `app/ui/log_pane.py` — `LogPane`, `make_pane`, shared constants
+Shared `QTextEdit` subclass used by both `MainWindow` and `FileViewer`. Extracted
+here to avoid circular imports. Key contents:
+
+- `LogPane(QTextEdit)`:
+  - `createMimeData` always produces plain text (never HTML).
+  - `append_line(segments, scroll=True)` inserts a line and enforces the
+    configurable cap by trimming the oldest block when `document().blockCount()`
+    exceeds `self._cap`. Smart scroll: only scrolls to bottom if the pane was
+    already at the bottom before the insert.
+  - `set_cap(n)` updates `self._cap` and immediately trims from the top.
+    Default `_DEFAULT_CAP = 100_000`.
+  - `mouseDoubleClickEvent` emits `line_double_clicked(str)` with the block
+    text at the click position.
+  - `dragEnterEvent` / `dropEvent` accept local file URL drops and emit
+    `file_dropped(Path)`. Text drops fall through to the default QTextEdit
+    handler.
+- `make_pane(font, cap=None) -> LogPane` — factory used by both windows.
+- `_fmt(hex_color) -> QTextCharFormat`, `_PANE_STYLE`, `_PLAIN_COLOR`,
+  `_DEFAULT_CAP` — shared style constants.
+
 ### `app/ui/filter_bar.py` — `FilterBar(QWidget)`
-Text input + type selector (substring/regex/level/module) + include/exclude
-toggle + Add button + AND/OR mode toggle. Active rules shown in a scrollable
-list with per-rule remove buttons. Emits `filters_changed(rules: list, mode:
-str)` whenever anything changes.
+Compact two-part filter UI. Constructor: `FilterBar(settings=None, parent=None)`.
+When `settings` is `None` (file viewer), all state is in-memory only — nothing
+is persisted to `AppSettings`.
+
+- **Input row** (`_input_row`): text input, type selector
+  (substring/regex/level/module), include/exclude selector, AND/OR mode
+  toggle, Add button. Hidden by default; toggled by a toolbar action. Escape
+  dismisses it and emits `input_bar_closed`.
+- **Chip strip** (`_chip_scroll`): horizontal scrollable row of `_RuleChip`
+  widgets, one per active rule. Each chip shows `+ sub: value` or `− lvl: err`
+  with a `×` remove button. Hidden completely when no rules are active.
+- `filters_changed(rules: list, mode: str)` — emitted on any rule/mode change.
+- `input_bar_closed` — emitted when Escape dismisses the input row; used by
+  the toolbar action to uncheck itself.
+- `add_rule(value, rule_type, mode)` — programmatic rule injection (used by
+  the file viewer find bar's "Filter to matches" button).
+- `toggle_input_bar()` / `is_input_bar_open() -> bool` — called by the
+  toolbar action.
 
 ### `app/ui/serial_panel.py` — `SerialPanel(QWidget)`
 Port `QComboBox` (populated from `serial.tools.list_ports`), baud rate
@@ -65,11 +100,16 @@ of connection state. Emits `connect_requested(port, baud)`,
 Wraps `QSettings` (org: `logulator`, app: `logulator`) with typed
 getters/setters and hardcoded defaults. Covers: window geometry, splitter
 state, sidebar open/closed, colorization settings (enabled, mode, apply-to,
-per-level colors, per-syntax-field colors), and buffer cap. All future
-persistent settings go through this class.
+per-level colors, per-syntax-field colors), buffer cap, and filter state.
+All future persistent settings go through this class.
 
 Buffer cap: `buffer_cap() -> int` / `set_buffer_cap(val: int)`. Default
 100,000, clamped to [1,000, 500,000] on read and write.
+
+Filter persistence (main window only — file viewers don't persist):
+- `filter_rules() -> list` / `set_filter_rules(rules: list)` — stored as JSON.
+- `filter_mode() -> str` / `set_filter_mode(mode: str)` — `'AND'` or `'OR'`.
+- `filter_bar_open() -> bool` / `set_filter_bar_open(val: bool)`.
 
 ### `app/colorizer.py` — `Colorizer`
 Reads settings from `AppSettings` and converts a log line string into a list
@@ -82,8 +122,8 @@ Two modes:
 
 Parses with a single compiled regex against the standard Zephyr format.
 Falls back to `#cccccc` for lines that don't match. The `Colorizer` instance
-is owned by `MainWindow` and shared; it reads live settings on every call so
-color changes apply immediately on the next line or rebuild.
+is owned by the window that created it and reads live settings on every call
+so color changes apply immediately on the next line or rebuild.
 
 Default colors (Dracula-inspired palette):
 - `<err>` → `#ff5555`, `<wrn>` → `#ffb86c`, `<inf>` → `#50fa7b`,
@@ -105,33 +145,92 @@ Fixed-width (280 px) collapsible panel shown on the right side of
 
 Reads/writes directly through `AppSettings`.
 
+### `app/ui/file_loader.py` — `FileLoaderWorker(QThread)`
+Background worker that streams a static log file in chunks of 2,000 lines.
+Emits `chunk_ready(list[str])` per chunk and `load_complete(int total_lines)`
+when done. Emits `error_occurred(str)` on `OSError`. Caller calls `cancel()`
+to abort early (e.g. on window close). Decodes with UTF-8, replacing errors.
+Strips `\r\n` / `\r` line endings.
+
+### `app/ui/find_bar.py` — `FindBar(QWidget)`
+Inline find bar for `FileViewer`. Hidden by default; toggled with Ctrl+F,
+dismissed with Escape.
+
+Layout: `Find:` label, text input, `◀` Prev, `▶` Next, match counter label
+(`X of Y` / `No matches`), `Filter to matches` button, close button.
+
+Signals:
+- `text_changed(str)` — live as user types (drives debounced search).
+- `go_next` / `go_prev` — Enter / Shift+Enter in the input, or button clicks.
+- `filter_to_matches(str)` — emits current search text; connected to
+  `FilterBar.add_rule()` to add it as a substring include rule.
+- `closed` — emitted when Escape or the close button hides the bar.
+
+`set_match_status(current, total, has_query)` updates the counter label and
+colors the input red when there are no matches.
+
+### `app/ui/file_viewer.py` — `FileViewer(QMainWindow)`
+Standalone log file viewer. Multiple instances may coexist; none are parented
+to `MainWindow` so closing the main window does not close them.
+
+**Opening:** `MainWindow.open_file(path)` creates an instance, stores it in
+`_file_viewers` to prevent GC, connects `about_to_close` for cleanup and
+`open_file_requested` so drags within a viewer open additional viewers through
+`MainWindow`.
+
+**Loading:** `FileLoaderWorker` streams the file in 2,000-line chunks.
+`_on_chunk_ready` appends to `_raw_pane` (and to `_filtered_pane` if rules
+are active). `_on_load_complete` scrolls both panes to the bottom, then
+triggers a full filtered-pane rebuild and any pending find-bar search so they
+cover the complete file.
+
+**Display cap:** `_FILE_PANE_CAP = 2_000_000` — effectively unlimited for
+static files. The serial window's `buffer_cap` setting does not apply here.
+
+**Filter bar (Phase 2a):** Same `FilterBar` widget with `settings=None`
+(in-memory, not persisted). The toolbar `▽ Filter` action toggles it.
+`_rebuild_filtered_pane()` iterates all `_raw_pane` document blocks so it
+always covers the full loaded file.
+
+**Find bar (Phase 2b):** `FindBar` docked at the bottom, hidden until Ctrl+F.
+Search uses `QTextDocument.find()` to iterate the full loaded document —
+operates on all lines, not just the visible portion. 300ms debounce on text
+input. Highlights:
+- Non-current matches: `QTextEdit.ExtraSelection` with dark amber background
+  (`#443900`). Capped at `_MAX_HIGHLIGHTS = 5000` ExtraSelections for
+  performance, centered around the current match.
+- Current match: `setTextCursor(cursor)` (standard Qt blue selection) +
+  `ensureCursorVisible()` + scrollbar centering.
+Navigation wraps. "Filter to matches" calls `FilterBar.add_rule()` with the
+current search text as a substring include rule.
+
+**Signals:** `about_to_close` (for `MainWindow` cleanup),
+`open_file_requested(Path)` (for drag-drops inside the viewer).
+
+**Colorization:** `_get_segments(line, pane)` follows the same logic as
+`MainWindow`, delegating to a `Colorizer` instance that reads live settings.
+
 ### `app/main_window.py` — `MainWindow(QMainWindow)`
 Composes all panels. Key behaviors:
 
-**Layout:** Central widget uses `QHBoxLayout`: left side holds the serial
-panel, filter bar, and vertical splitter (stretch=1); right side is
-`SettingsSidebar` (fixed 280 px, hidden when collapsed). A `⚙ Settings`
-checkable `QAction` in a `QToolBar` toggles the sidebar; open/closed state
-is persisted via `AppSettings`. Window geometry and splitter state are also
-saved to `AppSettings` on close and restored on startup.
+**Layout:** Toolbar at top with `▽ Filter` (checkable, toggles `FilterBar`
+input row) and `⚙ Settings` (checkable, toggles sidebar). Central widget
+uses `QHBoxLayout`: left side holds `FilterBar` at top, then `SerialPanel`,
+then the vertical splitter (stretch=1); right side is `SettingsSidebar`
+(fixed 280 px, hidden when collapsed). Menu bar has a `File` menu with
+`Open Log File…` (Ctrl+O). Window geometry and splitter state are saved to
+`AppSettings` on close and restored on startup.
 
-**Display panes:** Both `_raw_pane` and `_filtered_pane` are `LogPane`
-instances (a `QTextEdit` subclass defined in this file). `LogPane` key
-behaviors:
-- `createMimeData` always produces plain text (via `selection.toPlainText()`),
-  never HTML.
-- `append_line(segments, scroll=True)` inserts a line and enforces the
-  configurable cap by trimming the oldest block when
-  `document().blockCount()` exceeds `self._cap`. Smart scroll: when
-  `scroll=True`, only scrolls to the bottom if the pane was already at the
-  bottom before the insert (checked via `sb.value() >= sb.maximum() - 4`).
-  Rebuild callers pass `scroll=False` and scroll once after the loop.
-- `set_cap(n)` updates `self._cap` and immediately trims from the top if the
-  current buffer exceeds the new cap. Default cap is `_DEFAULT_CAP = 100_000`.
-- `mouseDoubleClickEvent` emits `line_double_clicked(str)` with the block
-  text at the click position (after calling super so Qt's word-select still
-  runs). Only `_filtered_pane.line_double_clicked` is connected (to
-  `_jump_to_raw_line`); the raw pane signal is unused.
+**Filter bar:** `FilterBar(self._settings)` persists rules, mode, and
+input-bar open/closed state. The `▽ Filter` toolbar action is kept in sync
+with the bar's visibility (including Escape-to-close). On startup,
+`_on_filters_changed` is called with the persisted rules to restore filter
+state (show/hide filtered pane, rebuild from raw pane buffer which is empty
+at startup).
+
+**Display panes:** `_raw_pane` and `_filtered_pane` are `LogPane` instances
+(from `app/ui/log_pane.py`). Both panes emit `file_dropped(Path)` which is
+connected to `MainWindow.open_file()`.
 
 **Split pane display:**
 - Top pane (`_raw_pane`): all incoming lines, unfiltered, always visible.
@@ -154,8 +253,7 @@ behaviors:
   finds the first matching block in `_raw_pane`, selects it
   (`StartOfBlock → EndOfBlock` with `KeepAnchor`), gives the raw pane focus,
   then centers it in the viewport via `ensureCursorVisible()` + scrollbar
-  adjustment. The mutual-exclusion handlers automatically clear the filtered
-  pane's word-select. Silent no-op if the line is not in the raw pane buffer.
+  adjustment. Silent no-op if the line is not in the raw pane buffer.
 
 **Colorization:** `_get_segments(line, pane)` checks `AppSettings` for
 enabled/apply-to and delegates to `Colorizer.colorize()` if active for that
@@ -172,6 +270,10 @@ both panes simultaneously.
 
 **Clearing the display:** `_on_clear()` clears both panes and resets
 `_line_count`. Does not affect the log file.
+
+**File viewers:** `open_file(path)` creates a `FileViewer`, stores it in
+`_file_viewers`, and connects `about_to_close` / `open_file_requested`.
+`_on_viewer_closed` removes closed viewers from the list.
 
 **Lifecycle:** `_on_connect` opens a new log session, resets line count and
 connect time, starts the worker and the status timer. `_on_disconnect(prompt_clear)`
@@ -204,7 +306,7 @@ Implementation complete and tested on macOS. All core features working:
 - Collapsible settings sidebar (⚙ Settings toolbar button); sidebar
   open/closed state persisted across launches
 - Persistent settings via QSettings: window geometry, splitter position,
-  sidebar state, all colorization preferences
+  sidebar state, all colorization preferences, filter rules/mode/bar-state
 - App icon loaded from icon.png at startup
 - Black/grey terminal-style display, configurable font size
 - Status bar with log filename, runtime, line count, file size
@@ -217,6 +319,19 @@ Implementation complete and tested on macOS. All core features working:
   settings sidebar; applied immediately, trims from top if over cap
 - Smart scroll: both panes only auto-scroll to bottom on new data when already
   at the bottom; scrolling up pauses auto-scroll without any toggle
+- Compact filter bar: collapsible input row (▽ Filter toolbar button, Escape
+  to close) + horizontal chip strip showing active rules; strip hidden when
+  no rules active; filter state persists across launches
+- File viewer: standalone window opened via File → Open Log File… (Ctrl+O) or
+  drag-and-drop onto any display pane; multiple viewers may be open
+  simultaneously; closing main window does not close viewers
+- File viewer uses chunked background loading (2,000 lines/chunk) so large
+  files don't block the UI; filter and find operate on the full loaded content
+- File viewer filter bar: same compact design as main window; rules are
+  in-memory only (not persisted)
+- File viewer find bar (Ctrl+F): text search with Enter/Shift+Enter navigation,
+  match counter, non-current match highlights (amber ExtraSelections), current
+  match highlight (blue selection), "Filter to matches" button
 
 **Under investigation:**
 - Possible bug where disconnecting and reconnecting reuses the same log
@@ -232,7 +347,16 @@ Implementation complete and tested on macOS. All core features working:
   `LogPane.set_cap()` by trimming oldest blocks when `document().blockCount()`
   exceeds `self._cap`. Filtered pane is rebuilt from raw pane blocks so it is
   bounded by the same cap. The log file is the source of truth for full history.
+- File viewer panes use `_FILE_PANE_CAP = 2_000_000` (no effective cap for
+  static files). The serial buffer cap setting does not apply to file viewers.
+- File viewer find/filter operate on `QTextDocument` content (the full loaded
+  file). For files that exceed `_FILE_PANE_CAP`, the oldest lines are trimmed
+  from the top and search will miss them — this is not expected in practice.
 - `\r\n` line endings from Zephyr UART must be stripped to `\r` before
   display — handled in `SerialWorker.run()` with `line.rstrip(b"\r")`.
+  `FileLoaderWorker` strips `\r\n` / `\r` via `rstrip("\r\n")`.
+- `LogPane` is defined in `app/ui/log_pane.py` (not `main_window.py`) to
+  avoid circular imports between `MainWindow` and `FileViewer`.
+- `filter_engine.py` is stateless and must remain untouched.
 - The .venv is Python 3.9 despite the 3.11+ requirement. Avoid new-style
   union type hints (`X | Y`) until the venv is upgraded.
