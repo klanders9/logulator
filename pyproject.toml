@@ -11,3 +11,14 @@ dependencies = [
     "PySide6>=6.7.0",
     "pyserial>=3.5",
 ]
+
+[project.scripts]
+logulator = "main:main"
+
+[tool.setuptools]
+packages = ["app", "app.ui"]
+py-modules = ["main"]
+
+[tool.setuptools.data-files]
+"share/applications" = ["data/logulator.desktop"]
+"share/icons/hicolor/256x256/apps" = ["icon.png"]

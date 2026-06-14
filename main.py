@@ -15,6 +15,7 @@ from app.main_window import MainWindow
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("logulator")
+    app.setDesktopFileName("logulator")
 
     icon_path = Path(__file__).parent / "icon.png"
     if icon_path.exists():
