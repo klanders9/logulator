@@ -41,8 +41,9 @@ Optional[Path]` for the status bar to read file size. Path is cleared on
 Reads bytes from the serial port, appends raw bytes to `LogWriter`, then
 splits on `\n` and emits `new_line(str)` per line. Strips trailing `\r`
 before decoding — Zephyr UART output uses `\r\n` and the bare `\r` would
-cause blank lines in the display panes. Also emits `error_occurred(str)` on
-`SerialException`. Never applies filters.
+cause blank lines in the display panes. Emits `connected()` immediately after
+the serial port opens (used by auto-reconnect to confirm reconnect succeeded),
+`error_occurred(str)` on `SerialException`. Never applies filters.
 
 ### `app/filter_engine.py` — stateless functions
 `match(line, rules, mode) -> bool`. Rule dict keys: `type`, `value`, `mode`.
@@ -101,17 +102,21 @@ is persisted to `AppSettings`.
 ### `app/ui/serial_panel.py` — `SerialPanel(QWidget)`
 Port `QComboBox` (populated from `serial.tools.list_ports`), baud rate
 selector (defaults to 115200), Refresh button, Connect/Disconnect toggle,
-font size dropdown (8–24 pt, defaults to 12), and a Clear button. Disables
-port/baud controls while connected. Clear button is always enabled regardless
-of connection state. Emits `connect_requested(port, baud)`,
-`disconnect_requested()`, `font_size_changed(int)`, and `clear_requested()`.
+Auto-reconnect checkbox, font size dropdown (8–24 pt, defaults to 12), and a
+Clear button. Disables port/baud controls while connected. Clear button and
+Auto-reconnect checkbox are always enabled regardless of connection state.
+Emits `connect_requested(port, baud)`, `disconnect_requested()`,
+`font_size_changed(int)`, `clear_requested()`, and
+`auto_reconnect_changed(bool)`.
+`set_auto_reconnect(val)` / `auto_reconnect() -> bool` for external
+get/set of the checkbox.
 
 ### `app/settings.py` — `AppSettings`
 Wraps `QSettings` (org: `logulator`, app: `logulator`) with typed
 getters/setters and hardcoded defaults. Covers: window geometry, splitter
 state, sidebar open/closed, colorization settings (enabled, mode, apply-to,
 per-level colors, per-syntax-field colors), buffer cap, filter state, recent
-files, and app theme.
+files, auto-reconnect, and app theme.
 All future persistent settings go through this class.
 
 Buffer cap: `buffer_cap() -> int` / `set_buffer_cap(val: int)`. Default
@@ -126,6 +131,10 @@ Recent files:
 - `recent_files() -> list` — ordered list of path strings, most recent first.
   Stored as JSON under `files/recent`.
 - `add_recent_file(path)` — prepends `path`, deduplicates, caps at 10 entries.
+
+Auto-reconnect:
+- `auto_reconnect() -> bool` / `set_auto_reconnect(val: bool)` — persisted
+  under `serial/auto_reconnect`. Default `False`.
 
 Theme:
 - `theme() -> str` / `set_theme(val: str)` — `'dracula'` or `'vscode'`.
@@ -461,6 +470,13 @@ Implementation complete and tested on macOS. All core features working:
   button; scrolling back to bottom resumes automatically
 - User-selectable app theme (Dracula / VS Code Dark) in the settings sidebar
   Appearance section; persisted via `AppSettings`; switches live without restart
+- Auto-reconnect checkbox in the serial panel: when enabled, an unexpected
+  disconnect (e.g. device reset or flash) triggers a 1-second retry loop
+  instead of showing an error dialog; the existing log file and display lines
+  are preserved across the gap; faint separator lines ("--- disconnected,
+  reconnecting… ---" / "--- reconnected ---") are appended to both display
+  panes to mark the event; checkbox state persisted via `AppSettings`; clicking
+  Disconnect or unchecking the box while reconnecting cancels and ends the session
 
 **Under investigation:**
 - Possible bug where disconnecting and reconnecting reuses the same log

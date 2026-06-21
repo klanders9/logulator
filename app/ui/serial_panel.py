@@ -6,6 +6,7 @@ disconnect_requested() signals."""
 import serial.tools.list_ports
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -23,6 +24,7 @@ class SerialPanel(QWidget):
     disconnect_requested = Signal()
     font_size_changed = Signal(int)
     clear_requested = Signal()
+    auto_reconnect_changed = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -42,6 +44,9 @@ class SerialPanel(QWidget):
         self._connect_btn = QPushButton("Connect")
         self._connect_btn.clicked.connect(self._on_connect_toggle)
 
+        self._auto_reconnect_cb = QCheckBox("Auto-reconnect")
+        self._auto_reconnect_cb.toggled.connect(self.auto_reconnect_changed)
+
         font_combo = QComboBox()
         font_combo.addItems(_FONT_SIZES)
         font_combo.setCurrentText(_DEFAULT_FONT_SIZE)
@@ -56,6 +61,7 @@ class SerialPanel(QWidget):
         layout.addWidget(QLabel("Baud:"))
         layout.addWidget(self._baud_combo)
         layout.addWidget(self._connect_btn)
+        layout.addWidget(self._auto_reconnect_cb)
         clear_btn = QPushButton("Clear")
         clear_btn.clicked.connect(self.clear_requested)
 
@@ -86,3 +92,9 @@ class SerialPanel(QWidget):
         self._connect_btn.setText("Disconnect" if connected else "Connect")
         self._port_combo.setEnabled(not connected)
         self._baud_combo.setEnabled(not connected)
+
+    def auto_reconnect(self) -> bool:
+        return self._auto_reconnect_cb.isChecked()
+
+    def set_auto_reconnect(self, val: bool) -> None:
+        self._auto_reconnect_cb.setChecked(val)

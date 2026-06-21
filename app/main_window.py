@@ -54,6 +54,10 @@ class MainWindow(QMainWindow):
         self._connect_time: Optional[datetime] = None
         self._splitter_initialized = False
         self._file_viewers: list = []
+        self._auto_reconnect: bool = self._settings.auto_reconnect()
+        self._reconnecting: bool = False
+        self._reconnect_port: str = ""
+        self._reconnect_baud: int = 115200
         MainWindow._instances.append(self)
 
         # --- Build UI ---
@@ -133,11 +137,18 @@ class MainWindow(QMainWindow):
         self._timer.setInterval(1000)
         self._timer.timeout.connect(self._update_status_bar)
 
+        self._reconnect_timer = QTimer(self)
+        self._reconnect_timer.setInterval(1000)
+        self._reconnect_timer.setSingleShot(True)
+        self._reconnect_timer.timeout.connect(self._try_reconnect)
+
         # Signal wiring
         self._serial_panel.connect_requested.connect(self._on_connect)
         self._serial_panel.disconnect_requested.connect(self._on_disconnect)
         self._serial_panel.font_size_changed.connect(self._on_font_size_changed)
         self._serial_panel.clear_requested.connect(self._on_clear)
+        self._serial_panel.auto_reconnect_changed.connect(self._on_auto_reconnect_changed)
+        self._serial_panel.set_auto_reconnect(self._auto_reconnect)
         self._filter_bar.filters_changed.connect(self._on_filters_changed)
         self._filter_bar.input_bar_closed.connect(self._on_filter_bar_closed)
         self._raw_pane.file_dropped.connect(self.open_file)
@@ -186,6 +197,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _on_connect(self, port: str, baud: int):
+        self._reconnect_port = port
+        self._reconnect_baud = baud
         self._log_writer.open_session()
         self._line_count = 0
         self._connect_time = datetime.now()
@@ -195,11 +208,14 @@ class MainWindow(QMainWindow):
         self._worker = SerialWorker(port, baud, self._log_writer)
         self._worker.new_line.connect(self._on_new_line)
         self._worker.error_occurred.connect(self._on_serial_error)
+        self._worker.connected.connect(self._on_reconnected)
         self._worker.start()
         self._serial_panel.set_connected(True)
         self._timer.start()
 
     def _on_disconnect(self, prompt_clear: bool = True):
+        self._reconnect_timer.stop()
+        self._reconnecting = False
         self._timer.stop()
         if self._worker is not None:
             self._worker.stop()
@@ -222,8 +238,45 @@ class MainWindow(QMainWindow):
                 self._on_clear()
 
     def _on_serial_error(self, message: str):
-        self._on_disconnect(prompt_clear=False)
-        QMessageBox.critical(self, "Serial error", message)
+        if self._auto_reconnect:
+            if self._worker is not None:
+                self._worker.stop()
+                self._worker = None
+            if not self._reconnecting:
+                self._reconnecting = True
+                self._append_separator("--- disconnected, reconnecting… ---")
+            self._status_log.setText(f"Reconnecting to {self._reconnect_port}…")
+            self._reconnect_timer.start()
+        else:
+            self._on_disconnect(prompt_clear=False)
+            QMessageBox.critical(self, "Serial error", message)
+
+    def _try_reconnect(self):
+        self._worker = SerialWorker(self._reconnect_port, self._reconnect_baud, self._log_writer)
+        self._worker.new_line.connect(self._on_new_line)
+        self._worker.error_occurred.connect(self._on_serial_error)
+        self._worker.connected.connect(self._on_reconnected)
+        self._worker.start()
+
+    def _on_reconnected(self):
+        if not self._reconnecting:
+            return
+        self._reconnecting = False
+        path = self._log_writer.current_path
+        self._status_log.setText(f"Log: {path.name}" if path else "Log: unknown")
+        self._append_separator("--- reconnected ---")
+
+    def _on_auto_reconnect_changed(self, val: bool):
+        self._auto_reconnect = val
+        self._settings.set_auto_reconnect(val)
+        if not val and self._reconnecting:
+            self._on_disconnect(prompt_clear=False)
+
+    def _append_separator(self, text: str):
+        sep_fmt = _fmt("#555555")
+        self._raw_pane.append_line([(text, sep_fmt)])
+        if self._filtered_pane.isVisible():
+            self._filtered_pane.append_line([(text, sep_fmt)])
 
     # ------------------------------------------------------------------
     # Incoming data

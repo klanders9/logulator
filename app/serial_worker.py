@@ -12,6 +12,7 @@ from app.log_writer import LogWriter
 class SerialWorker(QThread):
     new_line = Signal(str)
     error_occurred = Signal(str)
+    connected = Signal()
 
     def __init__(self, port: str, baud: int, log_writer: LogWriter):
         super().__init__()
@@ -25,6 +26,7 @@ class SerialWorker(QThread):
         buf = b""
         try:
             with serial.Serial(self._port, self._baud, timeout=0.1) as ser:
+                self.connected.emit()
                 while self._running:
                     chunk = ser.read(ser.in_waiting or 1)
                     if chunk:

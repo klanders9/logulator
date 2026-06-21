@@ -152,6 +152,14 @@ class AppSettings:
         paths.insert(0, s)
         self._qs.setValue("files/recent", json.dumps(paths[: self._RECENT_MAX]))
 
+    # --- Auto-reconnect ---
+
+    def auto_reconnect(self) -> bool:
+        return self._qs.value("serial/auto_reconnect", False, type=bool)
+
+    def set_auto_reconnect(self, val: bool) -> None:
+        self._qs.setValue("serial/auto_reconnect", val)
+
     # --- Theme ---
 
     def theme(self) -> str:
