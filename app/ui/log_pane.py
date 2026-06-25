@@ -11,7 +11,6 @@ from PySide6.QtWidgets import QTextEdit
 _DEFAULT_CAP = 100_000
 _PANE_STYLE = (
     "QTextEdit {"
-    "  color: #cccccc;"
     "  border: 1px solid #555555;"
     "}"
 )
