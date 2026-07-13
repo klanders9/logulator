@@ -2,7 +2,8 @@
 """Widget providing serial port enumeration (QComboBox), baud rate selector,
 an advanced-config button (data bits/parity/stop bits/flow/DTR/RTS via
 SerialConfigDialog), and a Connect/Disconnect button. Emits
-connect_requested(port, baud) and disconnect_requested() signals."""
+connect_requested(port, baud) and disconnect_requested() signals.
+Last-used port and baud are persisted and restored on launch."""
 
 from typing import Optional
 
@@ -21,14 +22,22 @@ from app.settings import AppSettings
 from app.ui.serial_config_dialog import SerialConfigDialog, config_summary, config_tooltip
 
 _BAUD_RATES = ["9600", "19200", "38400", "57600", "115200", "230400", "460800", "921600", "1000000"]
-_FONT_SIZES = ["8", "9", "10", "11", "12", "13", "14", "16", "18", "20", "24"]
-_DEFAULT_FONT_SIZE = "12"
+
+_DOT_COLORS = {
+    "idle": "#777777",
+    "connected": "#50fa7b",
+    "reconnecting": "#ffb86c",
+}
+_DOT_TOOLTIPS = {
+    "idle": "Not connected",
+    "connected": "Connected",
+    "reconnecting": "Reconnecting…",
+}
 
 
 class SerialPanel(QWidget):
     connect_requested = Signal(str, int)
     disconnect_requested = Signal()
-    font_size_changed = Signal(int)
     clear_requested = Signal()
     auto_reconnect_changed = Signal(bool)
 
@@ -38,6 +47,9 @@ class SerialPanel(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
+        self._status_dot = QLabel("●")
+        self.set_status("idle")
+
         self._port_combo = QComboBox()
         self._port_combo.setMinimumWidth(180)
 
@@ -46,26 +58,23 @@ class SerialPanel(QWidget):
 
         self._baud_combo = QComboBox()
         self._baud_combo.addItems(_BAUD_RATES)
-        self._baud_combo.setCurrentText("115200")
+        saved_baud = str(self._settings.last_baud())
+        self._baud_combo.setCurrentText(
+            saved_baud if saved_baud in _BAUD_RATES else "115200"
+        )
 
         self._config_btn = QPushButton()
         self._config_btn.clicked.connect(self._on_config_clicked)
         self._update_config_button()
 
         self._connect_btn = QPushButton("Connect")
+        self._connect_btn.setDefault(True)
         self._connect_btn.clicked.connect(self._on_connect_toggle)
 
         self._auto_reconnect_cb = QCheckBox("Auto-reconnect")
         self._auto_reconnect_cb.toggled.connect(self.auto_reconnect_changed)
 
-        font_combo = QComboBox()
-        font_combo.addItems(_FONT_SIZES)
-        font_combo.setCurrentText(_DEFAULT_FONT_SIZE)
-        font_combo.setFixedWidth(54)
-        font_combo.currentTextChanged.connect(
-            lambda text: self.font_size_changed.emit(int(text))
-        )
-
+        layout.addWidget(self._status_dot)
         layout.addWidget(QLabel("Port:"))
         layout.addWidget(self._port_combo)
         layout.addWidget(refresh_btn)
@@ -79,17 +88,30 @@ class SerialPanel(QWidget):
 
         layout.addStretch()
         layout.addWidget(clear_btn)
-        layout.addWidget(QLabel("Font:"))
-        layout.addWidget(font_combo)
-        layout.addWidget(QLabel("pt"))
 
         self._connected = False
         self._refresh_ports()
+        self._restore_last_port()
 
     def _refresh_ports(self):
+        # Preserve the current selection across a refresh when possible.
+        current = self._port_combo.currentData()
         self._port_combo.clear()
-        ports = [p.device for p in serial.tools.list_ports.comports()]
-        self._port_combo.addItems(ports)
+        for p in serial.tools.list_ports.comports():
+            desc = p.description if p.description and p.description != "n/a" else ""
+            label = f"{p.device} — {desc}" if desc else p.device
+            self._port_combo.addItem(label, p.device)
+        if current:
+            idx = self._port_combo.findData(current)
+            if idx >= 0:
+                self._port_combo.setCurrentIndex(idx)
+
+    def _restore_last_port(self):
+        saved = self._settings.last_port()
+        if saved:
+            idx = self._port_combo.findData(saved)
+            if idx >= 0:
+                self._port_combo.setCurrentIndex(idx)
 
     def _on_config_clicked(self):
         dlg = SerialConfigDialog(self._settings, self)
@@ -104,9 +126,12 @@ class SerialPanel(QWidget):
         if self._connected:
             self.disconnect_requested.emit()
         else:
-            port = self._port_combo.currentText()
+            port = self._port_combo.currentData()
             if port:
-                self.connect_requested.emit(port, int(self._baud_combo.currentText()))
+                baud = int(self._baud_combo.currentText())
+                self._settings.set_last_port(port)
+                self._settings.set_last_baud(baud)
+                self.connect_requested.emit(port, baud)
 
     def set_connected(self, connected: bool):
         self._connected = connected
@@ -114,6 +139,13 @@ class SerialPanel(QWidget):
         self._port_combo.setEnabled(not connected)
         self._baud_combo.setEnabled(not connected)
         self._config_btn.setEnabled(not connected)
+        self.set_status("connected" if connected else "idle")
+
+    def set_status(self, state: str) -> None:
+        """state: 'idle' | 'connected' | 'reconnecting' — drives the dot."""
+        color = _DOT_COLORS.get(state, _DOT_COLORS["idle"])
+        self._status_dot.setStyleSheet(f"color: {color}; font-size: 14px;")
+        self._status_dot.setToolTip(_DOT_TOOLTIPS.get(state, ""))
 
     def auto_reconnect(self) -> bool:
         return self._auto_reconnect_cb.isChecked()

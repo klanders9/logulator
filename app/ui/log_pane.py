@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QMimeData, Signal
 from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
-from PySide6.QtWidgets import QTextEdit
+from PySide6.QtWidgets import QLabel, QTextEdit, QVBoxLayout, QWidget
 
 _DEFAULT_CAP = 100_000
 _PANE_STYLE = (
@@ -111,3 +111,28 @@ def make_pane(font: QFont, cap: Optional[int] = None) -> LogPane:
     if cap is not None:
         pane.set_cap(cap)
     return pane
+
+
+def doc_line_count(pane: LogPane) -> int:
+    """Number of lines displayed in a pane (0 for an empty document — Qt
+    reports blockCount() == 1 for an empty QTextDocument)."""
+    doc = pane.document()
+    n = doc.blockCount()
+    if n == 1 and doc.firstBlock().text() == "":
+        return 0
+    return n
+
+
+def pane_with_header(pane: LogPane, title: str) -> Tuple[QWidget, QLabel]:
+    """Wrap a pane in a container with a slim header label above it.
+    Returns (container, header_label) — the container goes in the splitter,
+    the label can be updated live (e.g. filtered match counts)."""
+    header = QLabel(title)
+    header.setStyleSheet("color: #999999; font-size: 11px; padding: 1px 4px;")
+    container = QWidget()
+    layout = QVBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(1)
+    layout.addWidget(header)
+    layout.addWidget(pane, stretch=1)
+    return container, header

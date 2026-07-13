@@ -5,10 +5,9 @@ compact filter bar as the main window (Phase 2a), and an inline find bar (Phase 
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from PySide6.QtCore import Qt, QFileSystemWatcher, QTimer, Signal
+from PySide6.QtCore import Qt, QFileSystemWatcher, Signal
 from PySide6.QtGui import (
     QAction,
-    QColor,
     QFont,
     QKeySequence,
     QTextCharFormat,
@@ -22,7 +21,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QSplitter,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -32,23 +30,21 @@ from app.colorizer import Colorizer
 from app.settings import AppSettings
 from app.ui.filter_bar import FilterBar
 from app.ui.find_bar import FindBar
+from app.ui.find_controller import FindController
 from app.ui.file_loader import FileLoaderWorker
-from app.ui.log_pane import LogPane, _fmt, _PANE_STYLE, _PLAIN_COLOR, make_pane
+from app.ui.log_pane import (
+    LogPane,
+    _fmt,
+    _PANE_STYLE,
+    _PLAIN_COLOR,
+    doc_line_count,
+    make_pane,
+    pane_with_header,
+)
 
-_DEFAULT_FONT_SIZE = 12
 # File viewers don't enforce a display cap — file content is finite and static.
 # Set a generous cap to prevent runaway memory for pathological files.
 _FILE_PANE_CAP = 2_000_000
-
-# Highlight colours for find bar
-_MATCH_BG = QColor("#443900")        # non-current match: dark amber
-_MATCH_CURRENT_BG = QColor("#1a5fa8")  # current match: same as selection blue
-_MATCH_CURRENT_FG = QColor("#ffffff")
-
-# Maximum ExtraSelections applied at once (performance guard)
-_MAX_HIGHLIGHTS = 5000
-
-_SEARCH_DEBOUNCE_MS = 300
 
 
 class FileViewer(QMainWindow):
@@ -71,14 +67,6 @@ class FileViewer(QMainWindow):
         self._splitter_initialized = False
         self._worker: Optional[FileLoaderWorker] = None
 
-        # Find state
-        self._match_cursors: List[QTextCursor] = []
-        self._current_match_idx = -1
-        self._search_timer = QTimer(self)
-        self._search_timer.setSingleShot(True)
-        self._search_timer.setInterval(_SEARCH_DEBOUNCE_MS)
-        self._search_timer.timeout.connect(self._do_search)
-
         # Tail/follow state
         self._follow = False
         self._follow_paused = False
@@ -97,22 +85,27 @@ class FileViewer(QMainWindow):
         # ---- Font ----
         font = QFont("Menlo")
         font.setStyleHint(QFont.StyleHint.Monospace)
-        font.setPointSize(_DEFAULT_FONT_SIZE)
+        font.setPointSize(settings.font_size())
 
         # ---- Panes ----
         self._raw_pane = make_pane(font, cap=_FILE_PANE_CAP)
         self._filtered_pane = make_pane(font, cap=_FILE_PANE_CAP)
-        self._filtered_pane.hide()
+        raw_box, self._raw_header = pane_with_header(self._raw_pane, "Raw")
+        self._filtered_box, self._filtered_header = pane_with_header(
+            self._filtered_pane, "Filtered"
+        )
+        self._filtered_box.hide()
 
         self._splitter = QSplitter(Qt.Orientation.Vertical)
-        self._splitter.addWidget(self._raw_pane)
-        self._splitter.addWidget(self._filtered_pane)
+        self._splitter.addWidget(raw_box)
+        self._splitter.addWidget(self._filtered_box)
 
         # ---- Filter bar (no settings persistence for file viewers) ----
         self._filter_bar = FilterBar(settings=None, parent=None)
 
         # ---- Find bar ----
         self._find_bar = FindBar()
+        self._find = FindController(self._find_bar, self._raw_pane, self)
 
         # ---- Layout ----
         body = QWidget()
@@ -174,10 +167,6 @@ class FileViewer(QMainWindow):
         self._raw_pane.file_dropped.connect(self.open_file)
         self._filtered_pane.file_dropped.connect(self.open_file)
 
-        self._find_bar.text_changed.connect(self._on_find_text_changed)
-        self._find_bar.go_next.connect(self._on_find_next)
-        self._find_bar.go_prev.connect(self._on_find_prev)
-        self._find_bar.closed.connect(self._on_find_bar_closed)
         self._find_bar.filter_to_matches.connect(self._on_filter_to_matches)
 
         self._raw_pane.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
@@ -225,8 +214,9 @@ class FileViewer(QMainWindow):
         if self._rules:
             self._rebuild_filtered_pane()
         # Re-run any active search
-        if self._find_bar.isVisible() and self._find_bar.get_text():
-            self._do_search()
+        self._find.research()
+        # Tail the file by default — turn Follow off per-window if unwanted.
+        self._follow_action.setChecked(True)
 
     def _on_load_error(self, message: str) -> None:
         self._loading = False
@@ -238,6 +228,13 @@ class FileViewer(QMainWindow):
         self._status_label.setText(
             f"{self._path.name}  |  {self._total_lines:,} lines{suffix}"
         )
+        self._update_pane_headers()
+
+    def _update_pane_headers(self) -> None:
+        if self._filtered_box.isVisible():
+            n = doc_line_count(self._filtered_pane)
+            m = doc_line_count(self._raw_pane)
+            self._filtered_header.setText(f"Filtered — {n:,} of {m:,} lines")
 
     # ------------------------------------------------------------------
     # Colorization
@@ -270,13 +267,14 @@ class FileViewer(QMainWindow):
                 h = self._splitter.height()
                 if h > 0:
                     self._splitter.setSizes([int(h * 0.6), int(h * 0.4)])
-            self._filtered_pane.show()
+            self._filtered_box.show()
             if not self._loading:
                 self._rebuild_filtered_pane()
             # During loading, _on_chunk_ready appends matching lines in real-time;
             # _on_load_complete does a full rebuild when done.
+            self._update_pane_headers()
         else:
-            self._filtered_pane.hide()
+            self._filtered_box.hide()
             self._filtered_pane.clear()
 
     def _rebuild_filtered_pane(self) -> None:
@@ -294,6 +292,7 @@ class FileViewer(QMainWindow):
         self._filtered_pane.setUpdatesEnabled(True)
         sb = self._filtered_pane.verticalScrollBar()
         sb.setValue(sb.maximum())
+        self._update_pane_headers()
 
     def _on_filter_action_toggled(self, checked: bool) -> None:
         if checked != self._filter_bar.is_input_bar_open():
@@ -353,105 +352,6 @@ class FileViewer(QMainWindow):
                 )
                 return
             block = block.next()
-
-    # ------------------------------------------------------------------
-    # Find bar (Phase 2b)
-    # ------------------------------------------------------------------
-
-    def _on_find_text_changed(self, text: str) -> None:
-        if not text:
-            self._clear_highlights()
-            self._find_bar.set_match_status(0, 0, has_query=False)
-            return
-        self._search_timer.start()
-
-    def _do_search(self) -> None:
-        text = self._find_bar.get_text()
-        if not text:
-            self._clear_highlights()
-            return
-
-        doc = self._raw_pane.document()
-        self._match_cursors = []
-        cursor = doc.find(text, 0)
-        while not cursor.isNull():
-            self._match_cursors.append(cursor)
-            cursor = doc.find(text, cursor)
-
-        total = len(self._match_cursors)
-        if total == 0:
-            self._clear_highlights()
-            self._find_bar.set_match_status(0, 0)
-            return
-
-        self._current_match_idx = 0
-        self._apply_highlights()
-        self._find_bar.set_match_status(1, total)
-
-    def _on_find_next(self) -> None:
-        if not self._match_cursors:
-            return
-        self._current_match_idx = (self._current_match_idx + 1) % len(
-            self._match_cursors
-        )
-        self._apply_highlights()
-        self._find_bar.set_match_status(
-            self._current_match_idx + 1, len(self._match_cursors)
-        )
-
-    def _on_find_prev(self) -> None:
-        if not self._match_cursors:
-            return
-        self._current_match_idx = (self._current_match_idx - 1) % len(
-            self._match_cursors
-        )
-        self._apply_highlights()
-        self._find_bar.set_match_status(
-            self._current_match_idx + 1, len(self._match_cursors)
-        )
-
-    def _on_find_bar_closed(self) -> None:
-        self._clear_highlights()
-        self._match_cursors = []
-        self._current_match_idx = -1
-
-    def _apply_highlights(self) -> None:
-        non_current_fmt = QTextCharFormat()
-        non_current_fmt.setBackground(_MATCH_BG)
-
-        # Cap highlights for performance; always include a window around current
-        total = len(self._match_cursors)
-        if total <= _MAX_HIGHLIGHTS:
-            indices_to_highlight = range(total)
-        else:
-            half = _MAX_HIGHLIGHTS // 2
-            start = max(0, self._current_match_idx - half)
-            end = min(total, start + _MAX_HIGHLIGHTS)
-            indices_to_highlight = range(start, end)
-
-        selections = []
-        for i in indices_to_highlight:
-            if i == self._current_match_idx:
-                continue
-            sel = QTextEdit.ExtraSelection()
-            sel.format = non_current_fmt
-            sel.cursor = self._match_cursors[i]
-            selections.append(sel)
-
-        self._raw_pane.setExtraSelections(selections)
-
-        # Jump to current match using the text cursor (standard selection highlight)
-        if 0 <= self._current_match_idx < total:
-            cur = self._match_cursors[self._current_match_idx]
-            self._raw_pane.setTextCursor(cur)
-            self._raw_pane.ensureCursorVisible()
-            rect = self._raw_pane.cursorRect()
-            sb = self._raw_pane.verticalScrollBar()
-            target = sb.value() + rect.center().y() - self._raw_pane.viewport().height() // 2
-            sb.setValue(max(0, target))
-
-    def _clear_highlights(self) -> None:
-        self._raw_pane.setExtraSelections([])
 
     # ------------------------------------------------------------------
     # Tail / follow mode
@@ -567,6 +467,7 @@ class FileViewer(QMainWindow):
             sidebar = SettingsSidebar(self._settings)
             sidebar.settings_changed.connect(self._on_settings_changed)
             sidebar.theme_changed.connect(self._on_theme_changed)
+            sidebar.font_size_changed.connect(self._on_font_size_changed)
             sidebar.buffer_cap_changed.connect(lambda _: None)
             layout.addWidget(sidebar)
             self._settings_dialog = dlg
@@ -582,6 +483,12 @@ class FileViewer(QMainWindow):
     def _on_theme_changed(self, theme: str) -> None:
         from app.theme import apply_palette
         apply_palette(QApplication.instance(), theme)
+
+    def _on_font_size_changed(self, size: int) -> None:
+        for pane in (self._raw_pane, self._filtered_pane):
+            f = pane.font()
+            f.setPointSize(size)
+            pane.setFont(f)
 
     def _rebuild_raw_pane(self) -> None:
         doc = self._raw_pane.document()

@@ -28,10 +28,14 @@ _THEME_LABELS = ["Dracula", "VS Code Dark"]
 _THEME_VALUES = ["dracula", "vscode"]
 
 
+_FONT_SIZES = ["8", "9", "10", "11", "12", "13", "14", "16", "18", "20", "24"]
+
+
 class SettingsSidebar(QWidget):
     settings_changed = Signal()
     buffer_cap_changed = Signal(int)
     theme_changed = Signal(str)
+    font_size_changed = Signal(int)
 
     def __init__(self, settings: AppSettings, parent=None):
         super().__init__(parent)
@@ -57,6 +61,17 @@ class SettingsSidebar(QWidget):
         )
         theme_row.addWidget(self._theme_combo, stretch=1)
         layout.addLayout(theme_row)
+
+        font_row = QHBoxLayout()
+        font_row.addWidget(QLabel("Font size:"), stretch=1)
+        self._font_combo = QComboBox()
+        self._font_combo.addItems(_FONT_SIZES)
+        self._font_combo.setCurrentText(str(settings.font_size()))
+        self._font_combo.setFixedWidth(60)
+        self._font_combo.currentTextChanged.connect(self._on_font_size_changed)
+        font_row.addWidget(self._font_combo)
+        font_row.addWidget(QLabel("pt"))
+        layout.addLayout(font_row)
 
         layout.addWidget(self._section_label("Display"))
         layout.addWidget(self._subsection_label("Colorization"))
@@ -201,3 +216,8 @@ class SettingsSidebar(QWidget):
     def _on_buffer_cap_changed(self, value: int) -> None:
         self._s.set_buffer_cap(value)
         self.buffer_cap_changed.emit(value)
+
+    def _on_font_size_changed(self, text: str) -> None:
+        size = int(text)
+        self._s.set_font_size(size)
+        self.font_size_changed.emit(size)

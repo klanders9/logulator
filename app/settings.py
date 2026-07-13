@@ -162,6 +162,21 @@ class AppSettings:
     def set_auto_reconnect(self, val: bool) -> None:
         self._qs.setValue("serial/auto_reconnect", val)
 
+    # --- Last-used connection ---
+
+    def last_port(self) -> str:
+        v = self._qs.value("serial/last_port", "")
+        return v if isinstance(v, str) else ""
+
+    def set_last_port(self, val: str) -> None:
+        self._qs.setValue("serial/last_port", val)
+
+    def last_baud(self) -> int:
+        return self._qs.value("serial/last_baud", 115200, type=int)
+
+    def set_last_baud(self, val: int) -> None:
+        self._qs.setValue("serial/last_baud", val)
+
     # --- Serial connection options ---
 
     def serial_databits(self) -> int:
@@ -223,6 +238,18 @@ class AppSettings:
 
     def set_tx_color(self, color: str) -> None:
         self._qs.setValue("color/tx", color)
+
+    # --- Font ---
+
+    _FONT_SIZES = (8, 9, 10, 11, 12, 13, 14, 16, 18, 20, 24)
+
+    def font_size(self) -> int:
+        v = self._qs.value("app/font_size", 12, type=int)
+        return v if v in self._FONT_SIZES else 12
+
+    def set_font_size(self, val: int) -> None:
+        if val in self._FONT_SIZES:
+            self._qs.setValue("app/font_size", val)
 
     # --- Theme ---
 

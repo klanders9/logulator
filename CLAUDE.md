@@ -90,6 +90,12 @@ here to avoid circular imports. Key contents:
     `file_dropped(Path)`. Text drops fall through to the default QTextEdit
     handler.
 - `make_pane(font, cap=None) -> LogPane` — factory used by both windows.
+- `doc_line_count(pane) -> int` — displayed line count (0 for an empty
+  document; Qt reports blockCount()==1 when empty).
+- `pane_with_header(pane, title) -> (container, header_label)` — wraps a pane
+  with a slim grey header label; the container goes in the splitter and the
+  label can be updated live (filtered match counts). Both windows use this;
+  show/hide the **container** (`_filtered_box`), not the pane itself.
 - `_fmt(hex_color) -> QTextCharFormat`, `_PANE_STYLE`, `_PLAIN_COLOR`,
   `_DEFAULT_CAP` — shared style constants.
 
@@ -116,16 +122,21 @@ is persisted to `AppSettings`.
 ### `app/ui/serial_panel.py` — `SerialPanel(QWidget)`
 Constructor: `SerialPanel(settings=None, parent=None)` (creates its own
 `AppSettings` if none given; `MainWindow` passes its instance).
-Port `QComboBox` (populated from `serial.tools.list_ports`), baud rate
-selector (defaults to 115200), a config summary button (shows e.g. `8-N-1`,
-full config in tooltip; opens `SerialConfigDialog`), Refresh button,
-Connect/Disconnect toggle, Auto-reconnect checkbox, font size dropdown
-(8–24 pt, defaults to 12), and a Clear button. Disables port/baud/config
-controls while connected. Clear button and Auto-reconnect checkbox are always
-enabled regardless of connection state.
+Status dot (● grey idle / green connected / amber reconnecting — set via
+`set_status('idle'|'connected'|'reconnecting')`; `set_connected` also updates
+it), port `QComboBox` (items show `device — description` from
+`serial.tools.list_ports` with the device path as item data — always use
+`currentData()`, not `currentText()`, for the port), baud rate selector, a
+config summary button (shows e.g. `8-N-1`, full config in tooltip; opens
+`SerialConfigDialog`), Refresh button (preserves the current selection when
+the port is still present), Connect/Disconnect toggle, Auto-reconnect
+checkbox, and a Clear button. Last-used port and baud are persisted on
+connect (`AppSettings.last_port`/`last_baud`) and restored on launch when the
+port is present. Disables port/baud/config controls while connected. Clear
+button and Auto-reconnect checkbox are always enabled regardless of
+connection state. Font size moved to the settings sidebar.
 Emits `connect_requested(port, baud)`, `disconnect_requested()`,
-`font_size_changed(int)`, `clear_requested()`, and
-`auto_reconnect_changed(bool)`.
+`clear_requested()`, and `auto_reconnect_changed(bool)`.
 `set_auto_reconnect(val)` / `auto_reconnect() -> bool` for external
 get/set of the checkbox.
 
@@ -185,6 +196,13 @@ TX (send): `tx_line_ending()` (`'none'/'lf'/'cr'/'crlf'`, default `'crlf'`,
 stored under `tx/line_ending`); `tx_color()` / `set_tx_color()` (default
 `#8be9fd`, stored under `color/tx`).
 
+Last-used connection: `last_port()` / `set_last_port()` (str, default `""`),
+`last_baud()` / `set_last_baud()` (int, default 115200) — stored under
+`serial/last_*`, written by `SerialPanel` on connect, restored on launch.
+
+Font: `font_size()` / `set_font_size()` — validated against the size list
+(8–24), default 12, stored under `app/font_size`.
+
 Theme:
 - `theme() -> str` / `set_theme(val: str)` — `'dracula'` or `'vscode'`.
   Stored under `app/theme`. Default `'dracula'`.
@@ -231,6 +249,9 @@ Fixed-width (280 px) collapsible panel shown on the right side of
 - **Appearance:** theme dropdown ("Dracula" / "VS Code Dark"). Emits
   `theme_changed(str)` with the internal key (`'dracula'`/`'vscode'`).
   Change takes effect immediately via `apply_palette` — no restart needed.
+  Also a font size dropdown (8–24 pt, persisted via `AppSettings.font_size`,
+  default 12) emitting `font_size_changed(int)` — both `MainWindow` and
+  `FileViewer` (via its settings dialog) connect it to resize pane fonts live.
 - **Display / Colorization:** enable checkbox, mode selector (Level/Syntax),
   apply-to selector (All panes / Raw log only / Filtered log only / None),
   and color-picker rows for all eight configurable colors (four levels, three
@@ -249,8 +270,20 @@ when done. Emits `error_occurred(str)` on `OSError`. Caller calls `cancel()`
 to abort early (e.g. on window close). Decodes with UTF-8, replacing errors.
 Strips `\r\n` / `\r` line endings.
 
+### `app/ui/find_controller.py` — `FindController(QObject)`
+Reusable controller binding a `FindBar` to a `LogPane`. Owns all search
+state: match cursors, current index, 300 ms debounce timer, highlight
+application (amber ExtraSelections capped at 5,000, blue current-match
+selection, wrap-around navigation, scroll centering). Used by `FileViewer`
+(static file search) and `MainWindow` (live raw-buffer search). Public API:
+`research()` — re-run the current search after the document changed (called
+by `FileViewer._on_load_complete`). In the main window, matches are computed
+on demand and can go stale as lines append/trim — press Enter or retype to
+refresh; acceptable for live use.
+
 ### `app/ui/find_bar.py` — `FindBar(QWidget)`
-Inline find bar for `FileViewer`. Hidden by default; toggled with Ctrl+F,
+Inline find bar UI (widget only — logic lives in `FindController`). Used by
+`FileViewer` and `MainWindow`. Hidden by default; toggled with Ctrl+F,
 dismissed with Escape.
 
 Layout: `Find:` label, text input, `◀` Prev, `▶` Next, match counter label
@@ -296,18 +329,15 @@ static files. The serial window's `buffer_cap` setting does not apply here.
 persisted). The toolbar `▽ Filter` action toggles it. `_rebuild_filtered_pane()`
 iterates all `_raw_pane` document blocks so it always covers the full loaded file.
 
-**Find bar:** `FindBar` docked at the bottom, hidden until Ctrl+F. Search uses
-`QTextDocument.find()` to iterate the full loaded document — operates on all
-lines, not just the visible portion. 300ms debounce on text input. Highlights:
-- Non-current matches: `QTextEdit.ExtraSelection` with dark amber background
-  (`#443900`). Capped at `_MAX_HIGHLIGHTS = 5000` ExtraSelections for
-  performance, centered around the current match.
-- Current match: `setTextCursor(cursor)` (standard Qt blue selection) +
-  `ensureCursorVisible()` + scrollbar centering.
-Navigation wraps. "Filter to matches" calls `FilterBar.add_rule()` with the
-current search text as a substring include rule.
+**Find bar:** `FindBar` docked at the bottom, hidden until Ctrl+F; search
+logic delegated to a `FindController` bound to the raw pane (see its section
+for highlight/debounce details). "Filter to matches" calls
+`FilterBar.add_rule()` with the current search text as a substring include
+rule.
 
-**Follow (tail) mode:** "Follow" checkable toolbar action (default off).
+**Follow (tail) mode:** "Follow" checkable toolbar action — enabled
+automatically after the initial load completes (tail-by-default; uncheck
+per-window to stop).
 When enabled, `QFileSystemWatcher` monitors the file for changes. On
 `fileChanged`, new bytes are read from `_follow_pos` (byte offset after last
 read) into `_tail_buffer` to handle partial lines, then complete lines are
@@ -346,12 +376,29 @@ Composes all panels. Key behaviors:
 `open_new()`), `▽ Filter` (checkable, toggles `FilterBar` input row), and
 `⚙ Settings` (checkable, toggles sidebar). Central widget
 uses `QHBoxLayout`: left side holds `FilterBar` at top, then `SerialPanel`,
-then the vertical splitter (stretch=1), then `SendBar`; right side is `SettingsSidebar`
+then the vertical splitter (stretch=1), then `FindBar` (hidden until Ctrl+F),
+then `SendBar`; right side is `SettingsSidebar`
 (fixed 280 px, hidden when collapsed). Menu bar has a `File` menu with
-`Open Log File…` (Ctrl+O), a `Recent Files` submenu (last 10 paths, greyed
-out if the file no longer exists), and a `Help` menu with `About Logulator`.
+`New Window` (Ctrl+N), `Open Log File…` (Ctrl+O), a `Recent Files` submenu
+(last 10 paths, greyed out if the file no longer exists), and a `Help` menu
+with `About Logulator`. Shortcuts: `Ctrl+Shift+F` toggles the filter input
+row, `Ctrl+,` toggles the settings sidebar, `Ctrl+F` opens the find bar
+(all mapped to Cmd on macOS).
 Window geometry and splitter state are saved to `AppSettings` on close and
 restored on startup.
+
+**Pane headers:** both panes are wrapped via `pane_with_header` — "Raw" and
+"Filtered — N of M lines" (updated on rebuild, clear, and the 1 s status
+timer). The filtered **container** (`_filtered_box`) is what gets
+shown/hidden, not the pane widget. The raw pane shows a placeholder hint
+before first connect; the filtered pane shows "No lines match…".
+
+**Find:** `FindBar` + `FindController` over the raw pane (Ctrl+F). "Filter to
+matches" adds the search text as a substring include rule on the filter bar.
+
+**Status bar:** the log-filename label is clickable while connected — reveals
+the session log in Finder/Explorer (`_reveal_in_file_manager`, platform
+branches: `open -R` / `explorer /select,` / `QDesktopServices` folder open).
 
 **Filter bar:** `FilterBar()` (no settings — all state is in-memory, not
 persisted). The `▽ Filter` toolbar action is kept in sync with the bar's
@@ -396,8 +443,9 @@ pane. Falls back to a plain `#cccccc` format. `pane` is `'raw'` or
 - Right: session runtime (HH:MM:SS), line count, log file size — updated
   every second via `QTimer`.
 
-**Font size:** `font_size_changed` from `SerialPanel` updates point size on
-both panes simultaneously.
+**Font size:** `font_size_changed` from `SettingsSidebar` updates point size
+on both panes simultaneously; initial size comes from
+`AppSettings.font_size()`.
 
 **Clearing the display:** `_on_clear()` clears both panes and resets
 `_line_count`. Does not affect the log file.
@@ -534,6 +582,15 @@ Implementation complete and tested on macOS. All core features working:
   button; scrolling back to bottom resumes automatically
 - User-selectable app theme (Dracula / VS Code Dark) in the settings sidebar
   Appearance section; persisted via `AppSettings`; switches live without restart
+- UX round (2026-07): last-used port/baud persisted and restored; port
+  dropdown shows device descriptions; connection status dot (grey/green/amber);
+  keyboard shortcuts (Ctrl+N new window, Ctrl+Shift+F filter, Ctrl+, settings,
+  Ctrl+F find) and File → New Window menu item; font size moved to the
+  sidebar Appearance section and persisted; pane header labels ("Raw" /
+  "Filtered — N of M lines"); empty-state placeholder text in both panes;
+  find bar (Ctrl+F) in the main window over the live raw buffer via shared
+  `FindController`; clickable status-bar log filename reveals the file in
+  Finder/Explorer; file viewers enable Follow (tail) automatically after load
 - Serial TX: send bar below the panes (Enter to send, ↑/↓ history, line-ending
   selector CRLF/LF/CR/None, Send button); disabled while disconnected; sent
   lines echoed to the display and recorded in the session log with a `>> `

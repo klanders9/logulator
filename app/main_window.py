@@ -1,12 +1,21 @@
 # Copyright (c) 2026 Kevin Landers. SPDX-License-Identifier: MIT
 """Top-level QMainWindow. Composes SerialPanel, FilterBar, and the display panes."""
 
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QFont, QKeySequence, QTextCharFormat, QTextCursor
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import (
+    QAction,
+    QDesktopServices,
+    QFont,
+    QKeySequence,
+    QTextCharFormat,
+    QTextCursor,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -27,12 +36,40 @@ from app.log_writer import LogWriter
 from app.serial_worker import SerialWorker
 from app.settings import AppSettings
 from app.ui.filter_bar import FilterBar
-from app.ui.log_pane import LogPane, _fmt, _PANE_STYLE, _PLAIN_COLOR, _DEFAULT_CAP, make_pane
+from app.ui.find_bar import FindBar
+from app.ui.find_controller import FindController
+from app.ui.log_pane import (
+    LogPane,
+    _fmt,
+    _PANE_STYLE,
+    _PLAIN_COLOR,
+    _DEFAULT_CAP,
+    doc_line_count,
+    make_pane,
+    pane_with_header,
+)
 from app.ui.send_bar import SendBar
 from app.ui.serial_panel import SerialPanel
 from app.ui.settings_sidebar import SettingsSidebar
 
-_DEFAULT_FONT_SIZE = 12
+
+def _reveal_in_file_manager(path: Path) -> None:
+    """Show the file selected in Finder / Explorer / the default file manager."""
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", "-R", str(path)])
+    elif sys.platform.startswith("win"):
+        subprocess.Popen(["explorer", "/select,", str(path)])
+    else:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
+
+
+class _ClickableLabel(QLabel):
+    clicked = Signal()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -65,19 +102,29 @@ class MainWindow(QMainWindow):
         # --- Build UI ---
         font = QFont("Menlo")
         font.setStyleHint(QFont.StyleHint.Monospace)
-        font.setPointSize(_DEFAULT_FONT_SIZE)
+        font.setPointSize(self._settings.font_size())
 
         self._raw_pane = make_pane(font)
         self._filtered_pane = make_pane(font)
-        self._filtered_pane.hide()
+        self._raw_pane.setPlaceholderText(
+            "Select a port and press Connect — or drop a .log file here."
+        )
+        self._filtered_pane.setPlaceholderText("No lines match the active filters.")
+        raw_box, self._raw_header = pane_with_header(self._raw_pane, "Raw")
+        self._filtered_box, self._filtered_header = pane_with_header(
+            self._filtered_pane, "Filtered"
+        )
+        self._filtered_box.hide()
 
         self._splitter = QSplitter(Qt.Orientation.Vertical)
-        self._splitter.addWidget(self._raw_pane)
-        self._splitter.addWidget(self._filtered_pane)
+        self._splitter.addWidget(raw_box)
+        self._splitter.addWidget(self._filtered_box)
 
         self._serial_panel = SerialPanel(self._settings)
         self._filter_bar = FilterBar()
         self._send_bar = SendBar(self._settings)
+        self._find_bar = FindBar()
+        self._find = FindController(self._find_bar, self._raw_pane, self)
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
@@ -86,6 +133,7 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self._filter_bar)
         left_layout.addWidget(self._serial_panel)
         left_layout.addWidget(self._splitter, stretch=1)
+        left_layout.addWidget(self._find_bar)
         left_layout.addWidget(self._send_bar)
 
         self._sidebar = SettingsSidebar(self._settings)
@@ -103,6 +151,10 @@ class MainWindow(QMainWindow):
 
         # File menu
         file_menu = self.menuBar().addMenu("File")
+        new_win_menu_action = file_menu.addAction("New Window")
+        new_win_menu_action.setShortcut(QKeySequence("Ctrl+N"))
+        new_win_menu_action.triggered.connect(MainWindow.open_new)
+        file_menu.addSeparator()
         open_action = file_menu.addAction("Open Log File…")
         open_action.setShortcut(QKeySequence("Ctrl+O"))
         open_action.triggered.connect(self._on_open_file)
@@ -125,14 +177,23 @@ class MainWindow(QMainWindow):
         self._filter_action = toolbar.addAction("▽ Filter")
         self._filter_action.setCheckable(True)
         self._filter_action.setChecked(False)
+        self._filter_action.setShortcut(QKeySequence("Ctrl+Shift+F"))
         self._filter_action.toggled.connect(self._on_filter_action_toggled)
         self._settings_action = toolbar.addAction("⚙  Settings")
         self._settings_action.setCheckable(True)
         self._settings_action.setChecked(self._settings.sidebar_open())
+        self._settings_action.setShortcut(QKeySequence("Ctrl+,"))
         self._settings_action.toggled.connect(self._on_sidebar_toggle)
 
+        # Ctrl+F — find in the live raw buffer
+        find_action = QAction(self)
+        find_action.setShortcut(QKeySequence("Ctrl+F"))
+        find_action.triggered.connect(self._find_bar.show_and_focus)
+        self.addAction(find_action)
+
         # Status bar
-        self._status_log = QLabel("Not connected")
+        self._status_log = _ClickableLabel("Not connected")
+        self._status_log.clicked.connect(self._on_status_log_clicked)
         self._status_stats = QLabel("")
         self.statusBar().addWidget(self._status_log)
         self.statusBar().addPermanentWidget(self._status_stats)
@@ -149,7 +210,6 @@ class MainWindow(QMainWindow):
         # Signal wiring
         self._serial_panel.connect_requested.connect(self._on_connect)
         self._serial_panel.disconnect_requested.connect(self._on_disconnect)
-        self._serial_panel.font_size_changed.connect(self._on_font_size_changed)
         self._serial_panel.clear_requested.connect(self._on_clear)
         self._serial_panel.auto_reconnect_changed.connect(self._on_auto_reconnect_changed)
         self._serial_panel.set_auto_reconnect(self._auto_reconnect)
@@ -162,6 +222,8 @@ class MainWindow(QMainWindow):
         self._filtered_pane.selectionChanged.connect(self._on_filtered_pane_selection_changed)
         self._filtered_pane.line_double_clicked.connect(self._jump_to_raw_line)
         self._sidebar.buffer_cap_changed.connect(self._on_buffer_cap_changed)
+        self._sidebar.font_size_changed.connect(self._on_font_size_changed)
+        self._find_bar.filter_to_matches.connect(self._on_filter_to_matches)
 
         # Apply persisted buffer cap (overrides _DEFAULT_CAP set in LogPane.__init__)
         initial_cap = self._settings.buffer_cap()
@@ -229,6 +291,7 @@ class MainWindow(QMainWindow):
         self._worker.start()
         self._serial_panel.set_connected(True)
         self._send_bar.set_connected(True)
+        self._set_status_log_clickable(True)
         self._timer.start()
 
     def _on_disconnect(self, prompt_clear: bool = True):
@@ -242,6 +305,7 @@ class MainWindow(QMainWindow):
         self._connect_time = None
         self._serial_panel.set_connected(False)
         self._send_bar.set_connected(False)
+        self._set_status_log_clickable(False)
         self._status_log.setText("Not connected")
         self._status_stats.setText("")
 
@@ -264,6 +328,7 @@ class MainWindow(QMainWindow):
             if not self._reconnecting:
                 self._reconnecting = True
                 self._append_separator("--- disconnected, reconnecting… ---")
+            self._serial_panel.set_status("reconnecting")
             self._status_log.setText(f"Reconnecting to {self._reconnect_port}…")
             self._reconnect_timer.start()
         else:
@@ -284,6 +349,7 @@ class MainWindow(QMainWindow):
         if not self._reconnecting:
             return
         self._reconnecting = False
+        self._serial_panel.set_status("connected")
         path = self._log_writer.current_path
         self._status_log.setText(f"Log: {path.name}" if path else "Log: unknown")
         self._append_separator("--- reconnected ---")
@@ -340,10 +406,10 @@ class MainWindow(QMainWindow):
                 h = self._splitter.height()
                 if h > 0:
                     self._splitter.setSizes([int(h * 0.6), int(h * 0.4)])
-            self._filtered_pane.show()
+            self._filtered_box.show()
             self._rebuild_filtered_pane()
         else:
-            self._filtered_pane.hide()
+            self._filtered_box.hide()
             self._filtered_pane.clear()
 
     def _rebuild_filtered_pane(self):
@@ -359,6 +425,7 @@ class MainWindow(QMainWindow):
         self._filtered_pane.setUpdatesEnabled(True)
         sb = self._filtered_pane.verticalScrollBar()
         sb.setValue(sb.maximum())
+        self._update_pane_headers()
 
     def _rebuild_raw_pane(self):
         doc = self._raw_pane.document()
@@ -405,6 +472,29 @@ class MainWindow(QMainWindow):
         if self._filtered_pane.isVisible():
             self._filtered_pane.clear()
         self._line_count = 0
+        self._update_pane_headers()
+
+    def _update_pane_headers(self):
+        if self._filtered_box.isVisible():
+            n = doc_line_count(self._filtered_pane)
+            m = doc_line_count(self._raw_pane)
+            self._filtered_header.setText(f"Filtered — {n:,} of {m:,} lines")
+
+    def _on_filter_to_matches(self, text: str) -> None:
+        self._filter_bar.add_rule(text, "substring", "include")
+
+    def _set_status_log_clickable(self, clickable: bool) -> None:
+        if clickable:
+            self._status_log.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._status_log.setToolTip("Click to reveal the log file")
+        else:
+            self._status_log.unsetCursor()
+            self._status_log.setToolTip("")
+
+    def _on_status_log_clicked(self) -> None:
+        path = self._log_writer.current_path
+        if path and path.exists():
+            _reveal_in_file_manager(path)
 
     def _on_settings_changed(self):
         self._rebuild_raw_pane()
@@ -471,6 +561,7 @@ class MainWindow(QMainWindow):
         self._status_stats.setText(
             f"Runtime: {runtime}  |  Lines: {self._line_count:,}  |  Size: {size_str}"
         )
+        self._update_pane_headers()
 
     # ------------------------------------------------------------------
     # File viewer
