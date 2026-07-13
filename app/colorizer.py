@@ -62,6 +62,11 @@ class Colorizer:
         self._s = settings
 
     def colorize(self, line: str) -> List[Tuple[str, QTextCharFormat]]:
+        # Sent (TX) lines are echoed into the display and session log with a
+        # '>> ' marker; color them distinctly in both modes so they stand out
+        # and survive pane rebuilds / file-viewer loads.
+        if line.startswith(">> "):
+            return [(line, _fmt(self._s.tx_color()))]
         if self._s.color_mode() == "syntax":
             return self._syntax(line)
         return self._level(line)

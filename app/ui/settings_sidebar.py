@@ -103,6 +103,13 @@ class SettingsSidebar(QWidget):
                 lambda c, f=field: self._set_syntax_color(f, c),
             ))
 
+        layout.addWidget(self._subsection_label("Sent data"))
+        layout.addLayout(self._color_row(
+            "TX lines (>> )",
+            lambda: self._s.tx_color(),
+            lambda c: self._s.set_tx_color(c),
+        ))
+
         layout.addWidget(self._section_label("Buffer"))
         cap_row = QHBoxLayout()
         cap_row.addWidget(QLabel("Line cap:"), stretch=1)

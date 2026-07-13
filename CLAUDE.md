@@ -7,10 +7,13 @@ a target device streams structured log output over a serial port.
 
 ## Core Design Principle
 Raw log collection and filtered display are strictly separated:
-- The serial worker writes ALL bytes to a file-backed log, unmodified
+- The serial worker writes ALL received bytes to a file-backed log, unmodified
 - The UI applies filters purely as a view transform — the log file is never
   filtered, truncated, or modified by UI state
 - This is non-negotiable: do not blur this boundary
+- One deliberate extension (user-approved): sent (TX) lines are also recorded
+  in the session log, marked with a `>> ` prefix, so the file captures both
+  directions of the conversation. TX never modifies or filters RX bytes.
 
 ## Tech Stack
 - Python 3.11+ (note: the existing .venv uses Python 3.9 — avoid `X | Y`
@@ -44,6 +47,17 @@ before decoding — Zephyr UART output uses `\r\n` and the bare `\r` would
 cause blank lines in the display panes. Emits `connected()` immediately after
 the serial port opens (used by auto-reconnect to confirm reconnect succeeded),
 `error_occurred(str)` on `SerialException`. Never applies filters.
+
+Constructor takes an optional `options` dict: `databits` (5–8), `parity`
+(`'N'/'E'/'O'/'M'/'S'`), `stopbits` (`'1'/'1.5'/'2'`), `flow`
+(`'none'/'rtscts'/'xonxoff'`), `dtr` (bool), `rts` (bool). The port is
+constructed unopened so DTR/RTS initial state is set before `open()` (matters
+for boards that reset on a DTR/RTS edge); RTS is left driver-managed when
+hardware flow control is on.
+
+TX: `send(data: bytes)` queues bytes (thread-safe `queue.Queue`); the run
+loop drains the queue and writes before each read so all port access stays on
+the worker thread. Worst-case TX latency is one read timeout (0.1 s).
 
 ### `app/filter_engine.py` — stateless functions
 `match(line, rules, mode) -> bool`. Rule dict keys: `type`, `value`, `mode`.
@@ -100,16 +114,39 @@ is persisted to `AppSettings`.
   toolbar action.
 
 ### `app/ui/serial_panel.py` — `SerialPanel(QWidget)`
+Constructor: `SerialPanel(settings=None, parent=None)` (creates its own
+`AppSettings` if none given; `MainWindow` passes its instance).
 Port `QComboBox` (populated from `serial.tools.list_ports`), baud rate
-selector (defaults to 115200), Refresh button, Connect/Disconnect toggle,
-Auto-reconnect checkbox, font size dropdown (8–24 pt, defaults to 12), and a
-Clear button. Disables port/baud controls while connected. Clear button and
-Auto-reconnect checkbox are always enabled regardless of connection state.
+selector (defaults to 115200), a config summary button (shows e.g. `8-N-1`,
+full config in tooltip; opens `SerialConfigDialog`), Refresh button,
+Connect/Disconnect toggle, Auto-reconnect checkbox, font size dropdown
+(8–24 pt, defaults to 12), and a Clear button. Disables port/baud/config
+controls while connected. Clear button and Auto-reconnect checkbox are always
+enabled regardless of connection state.
 Emits `connect_requested(port, baud)`, `disconnect_requested()`,
 `font_size_changed(int)`, `clear_requested()`, and
 `auto_reconnect_changed(bool)`.
 `set_auto_reconnect(val)` / `auto_reconnect() -> bool` for external
 get/set of the checkbox.
+
+### `app/ui/serial_config_dialog.py` — `SerialConfigDialog(QDialog)`
+Modal dialog for advanced serial options: data bits, parity, stop bits, flow
+control, and "Assert DTR/RTS on connect" checkboxes (RTS checkbox disabled
+when RTS/CTS flow control is selected — driver-managed). Reads current values
+from `AppSettings` on open, writes them back on OK. Changes apply on the next
+connect. Module also exports `config_summary(settings) -> str` (`"8-N-1"`)
+and `config_tooltip(settings) -> str` used by `SerialPanel`'s button.
+
+### `app/ui/send_bar.py` — `SendBar(QWidget)`
+Input row for transmitting characters out the serial port, docked below the
+display panes in `MainWindow`. `Send:` label, `_HistoryLineEdit` (Enter sends;
+Up/Down recall previously sent lines, shell-style, in-memory only, capped at
+100 entries), line-ending combo (CRLF/LF/CR/None — persisted via
+`AppSettings.tx_line_ending`, default CRLF for Zephyr shell), and a Send
+button. Emits `send_requested(text, ending_chars)`. `set_connected(bool)`
+enables/disables the input and button (visible but greyed while
+disconnected); focuses the input on connect. Sending empty text is allowed
+(bare line ending nudges a shell prompt).
 
 ### `app/settings.py` — `AppSettings`
 Wraps `QSettings` (org: `logulator`, app: `logulator`) with typed
@@ -135,6 +172,18 @@ Recent files:
 Auto-reconnect:
 - `auto_reconnect() -> bool` / `set_auto_reconnect(val: bool)` — persisted
   under `serial/auto_reconnect`. Default `False`.
+
+Serial connection options (all validated on read/write, applied on next
+connect): `serial_databits()` (5–8, default 8), `serial_parity()`
+(`'N'/'E'/'O'/'M'/'S'`, default `'N'`), `serial_stopbits()`
+(`'1'/'1.5'/'2'`, default `'1'`), `serial_flow()`
+(`'none'/'rtscts'/'xonxoff'`, default `'none'`), `serial_dtr()` /
+`serial_rts()` (bool, default `True`) — with matching setters, stored under
+`serial/*`.
+
+TX (send): `tx_line_ending()` (`'none'/'lf'/'cr'/'crlf'`, default `'crlf'`,
+stored under `tx/line_ending`); `tx_color()` / `set_tx_color()` (default
+`#8be9fd`, stored under `color/tx`).
 
 Theme:
 - `theme() -> str` / `set_theme(val: str)` — `'dracula'` or `'vscode'`.
@@ -164,10 +213,16 @@ The `Colorizer` instance is owned by the window that created it and reads live
 settings on every call so color changes apply immediately on the next line or
 rebuild.
 
+Lines starting with `>> ` (the TX echo/log marker) are colored with the
+configurable TX color in BOTH modes, checked before any other parsing — so
+sent lines stand out live, survive pane rebuilds, and colorize when a saved
+session log is opened in the file viewer.
+
 Default colors (Dracula-inspired palette):
 - `<err>` → `#ff5555`, `<wrn>` → `#ffb86c`, `<inf>` → `#50fa7b`,
   `<dbg>` → `#888888`
 - Timestamp → `#666666`, Module → `#bd93f9`, Message body → `#f8f8f2`
+- TX lines (`>> `) → `#8be9fd`
 
 ### `app/ui/settings_sidebar.py` — `SettingsSidebar(QWidget)`
 Fixed-width (280 px) collapsible panel shown on the right side of
@@ -178,9 +233,9 @@ Fixed-width (280 px) collapsible panel shown on the right side of
   Change takes effect immediately via `apply_palette` — no restart needed.
 - **Display / Colorization:** enable checkbox, mode selector (Level/Syntax),
   apply-to selector (All panes / Raw log only / Filtered log only / None),
-  and color-picker rows for all seven configurable colors. Each color row
-  shows a live swatch; clicking `…` opens `QColorDialog`. Emits
-  `settings_changed()` on any change.
+  and color-picker rows for all eight configurable colors (four levels, three
+  syntax fields, TX lines). Each color row shows a live swatch; clicking `…`
+  opens `QColorDialog`. Emits `settings_changed()` on any change.
 - **Buffer:** `QSpinBox` for the display line cap (range 1,000–500,000, step
   1,000, default 100,000). Emits `buffer_cap_changed(int)` — a separate
   signal so changes don't trigger a full pane rebuild.
@@ -291,7 +346,7 @@ Composes all panels. Key behaviors:
 `open_new()`), `▽ Filter` (checkable, toggles `FilterBar` input row), and
 `⚙ Settings` (checkable, toggles sidebar). Central widget
 uses `QHBoxLayout`: left side holds `FilterBar` at top, then `SerialPanel`,
-then the vertical splitter (stretch=1); right side is `SettingsSidebar`
+then the vertical splitter (stretch=1), then `SendBar`; right side is `SettingsSidebar`
 (fixed 280 px, hidden when collapsed). Menu bar has a `File` menu with
 `Open Log File…` (Ctrl+O), a `Recent Files` submenu (last 10 paths, greyed
 out if the file no longer exists), and a `Help` menu with `About Logulator`.
@@ -360,8 +415,17 @@ the list. `_rebuild_recent_menu()` repopulates `_recent_menu` from
 `AppSettings.recent_files()`; also connected to `file_menu.aboutToShow` so
 the menu is always fresh when opened.
 
+**Sending (TX):** `SendBar.send_requested(text, ending)` → `_on_send`:
+no-op if `_worker is None` (brief gap during auto-reconnect). Otherwise
+`worker.send((text + ending).encode())`, writes `>> text\n` to the session
+log, and echoes `>> text` into the raw pane (and filtered pane if it matches
+the active rules). Echoes are not counted in `_line_count` (RX lines only).
+`_serial_options()` builds the worker options dict from `AppSettings`; it is
+captured at connect time into `_reconnect_options` so auto-reconnect reuses
+the same configuration.
+
 **Lifecycle:** `_on_connect` opens a new log session, resets line count and
-connect time, starts the worker and the status timer. `_on_disconnect(prompt_clear)`
+connect time, starts the worker and the status timer, enables the send bar. `_on_disconnect(prompt_clear)`
 stops the timer, stops the worker, closes the log. When `prompt_clear=True`
 (explicit user disconnect), shows a Yes/No dialog offering to clear the
 display. `closeEvent` saves geometry/splitter state, then calls
@@ -470,6 +534,14 @@ Implementation complete and tested on macOS. All core features working:
   button; scrolling back to bottom resumes automatically
 - User-selectable app theme (Dracula / VS Code Dark) in the settings sidebar
   Appearance section; persisted via `AppSettings`; switches live without restart
+- Serial TX: send bar below the panes (Enter to send, ↑/↓ history, line-ending
+  selector CRLF/LF/CR/None, Send button); disabled while disconnected; sent
+  lines echoed to the display and recorded in the session log with a `>> `
+  marker, colored with a configurable TX color
+- Advanced serial configuration: data bits, parity, stop bits, flow control
+  (RTS/CTS or XON/XOFF), and DTR/RTS initial line state via a dialog opened
+  from the `8-N-1` summary button in the serial panel; persisted; applied on
+  next connect; DTR/RTS pre-open assertion for reset-on-DTR boards
 - Auto-reconnect checkbox in the serial panel: when enabled, an unexpected
   disconnect (e.g. device reset or flash) triggers a 1-second retry loop
   instead of showing an error dialog; the existing log file and display lines

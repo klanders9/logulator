@@ -28,6 +28,7 @@ from app.serial_worker import SerialWorker
 from app.settings import AppSettings
 from app.ui.filter_bar import FilterBar
 from app.ui.log_pane import LogPane, _fmt, _PANE_STYLE, _PLAIN_COLOR, _DEFAULT_CAP, make_pane
+from app.ui.send_bar import SendBar
 from app.ui.serial_panel import SerialPanel
 from app.ui.settings_sidebar import SettingsSidebar
 
@@ -58,6 +59,7 @@ class MainWindow(QMainWindow):
         self._reconnecting: bool = False
         self._reconnect_port: str = ""
         self._reconnect_baud: int = 115200
+        self._reconnect_options: dict = {}
         MainWindow._instances.append(self)
 
         # --- Build UI ---
@@ -73,8 +75,9 @@ class MainWindow(QMainWindow):
         self._splitter.addWidget(self._raw_pane)
         self._splitter.addWidget(self._filtered_pane)
 
-        self._serial_panel = SerialPanel()
+        self._serial_panel = SerialPanel(self._settings)
         self._filter_bar = FilterBar()
+        self._send_bar = SendBar(self._settings)
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
@@ -83,6 +86,7 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self._filter_bar)
         left_layout.addWidget(self._serial_panel)
         left_layout.addWidget(self._splitter, stretch=1)
+        left_layout.addWidget(self._send_bar)
 
         self._sidebar = SettingsSidebar(self._settings)
         self._sidebar.setVisible(self._settings.sidebar_open())
@@ -149,6 +153,7 @@ class MainWindow(QMainWindow):
         self._serial_panel.clear_requested.connect(self._on_clear)
         self._serial_panel.auto_reconnect_changed.connect(self._on_auto_reconnect_changed)
         self._serial_panel.set_auto_reconnect(self._auto_reconnect)
+        self._send_bar.send_requested.connect(self._on_send)
         self._filter_bar.filters_changed.connect(self._on_filters_changed)
         self._filter_bar.input_bar_closed.connect(self._on_filter_bar_closed)
         self._raw_pane.file_dropped.connect(self.open_file)
@@ -196,21 +201,34 @@ class MainWindow(QMainWindow):
     # Serial lifecycle
     # ------------------------------------------------------------------
 
+    def _serial_options(self) -> dict:
+        s = self._settings
+        return {
+            "databits": s.serial_databits(),
+            "parity": s.serial_parity(),
+            "stopbits": s.serial_stopbits(),
+            "flow": s.serial_flow(),
+            "dtr": s.serial_dtr(),
+            "rts": s.serial_rts(),
+        }
+
     def _on_connect(self, port: str, baud: int):
         self._reconnect_port = port
         self._reconnect_baud = baud
+        self._reconnect_options = self._serial_options()
         self._log_writer.open_session()
         self._line_count = 0
         self._connect_time = datetime.now()
         path = self._log_writer.current_path
         self._status_log.setText(f"Log: {path.name}" if path else "Log: unknown")
 
-        self._worker = SerialWorker(port, baud, self._log_writer)
+        self._worker = SerialWorker(port, baud, self._log_writer, self._reconnect_options)
         self._worker.new_line.connect(self._on_new_line)
         self._worker.error_occurred.connect(self._on_serial_error)
         self._worker.connected.connect(self._on_reconnected)
         self._worker.start()
         self._serial_panel.set_connected(True)
+        self._send_bar.set_connected(True)
         self._timer.start()
 
     def _on_disconnect(self, prompt_clear: bool = True):
@@ -223,6 +241,7 @@ class MainWindow(QMainWindow):
         self._log_writer.close()
         self._connect_time = None
         self._serial_panel.set_connected(False)
+        self._send_bar.set_connected(False)
         self._status_log.setText("Not connected")
         self._status_stats.setText("")
 
@@ -252,7 +271,10 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Serial error", message)
 
     def _try_reconnect(self):
-        self._worker = SerialWorker(self._reconnect_port, self._reconnect_baud, self._log_writer)
+        self._worker = SerialWorker(
+            self._reconnect_port, self._reconnect_baud, self._log_writer,
+            self._reconnect_options,
+        )
         self._worker.new_line.connect(self._on_new_line)
         self._worker.error_occurred.connect(self._on_serial_error)
         self._worker.connected.connect(self._on_reconnected)
@@ -277,6 +299,23 @@ class MainWindow(QMainWindow):
         self._raw_pane.append_line([(text, sep_fmt)])
         if self._filtered_pane.isVisible():
             self._filtered_pane.append_line([(text, sep_fmt)])
+
+    # ------------------------------------------------------------------
+    # Outgoing data
+    # ------------------------------------------------------------------
+
+    def _on_send(self, text: str, ending: str):
+        # Worker is briefly None between an auto-reconnect drop and the retry.
+        if self._worker is None:
+            return
+        self._worker.send((text + ending).encode("utf-8"))
+        # Record TX in the session log with a '>> ' marker so the file
+        # captures both directions of the conversation.
+        self._log_writer.write(b">> " + text.encode("utf-8") + b"\n")
+        echo = ">> " + text
+        self._raw_pane.append_line(self._get_segments(echo, "raw"))
+        if self._rules and filter_engine.match(echo, self._rules, self._filter_mode):
+            self._filtered_pane.append_line(self._get_segments(echo, "filtered"))
 
     # ------------------------------------------------------------------
     # Incoming data

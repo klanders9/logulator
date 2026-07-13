@@ -1,7 +1,10 @@
 # Copyright (c) 2026 Kevin Landers. SPDX-License-Identifier: MIT
 """Widget providing serial port enumeration (QComboBox), baud rate selector,
-and a Connect/Disconnect button. Emits connect_requested(port, baud) and
-disconnect_requested() signals."""
+an advanced-config button (data bits/parity/stop bits/flow/DTR/RTS via
+SerialConfigDialog), and a Connect/Disconnect button. Emits
+connect_requested(port, baud) and disconnect_requested() signals."""
+
+from typing import Optional
 
 import serial.tools.list_ports
 from PySide6.QtCore import Signal
@@ -13,6 +16,9 @@ from PySide6.QtWidgets import (
     QPushButton,
     QWidget,
 )
+
+from app.settings import AppSettings
+from app.ui.serial_config_dialog import SerialConfigDialog, config_summary, config_tooltip
 
 _BAUD_RATES = ["9600", "19200", "38400", "57600", "115200", "230400", "460800", "921600", "1000000"]
 _FONT_SIZES = ["8", "9", "10", "11", "12", "13", "14", "16", "18", "20", "24"]
@@ -26,8 +32,9 @@ class SerialPanel(QWidget):
     clear_requested = Signal()
     auto_reconnect_changed = Signal(bool)
 
-    def __init__(self, parent=None):
+    def __init__(self, settings: Optional[AppSettings] = None, parent=None):
         super().__init__(parent)
+        self._settings = settings if settings is not None else AppSettings()
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
@@ -40,6 +47,10 @@ class SerialPanel(QWidget):
         self._baud_combo = QComboBox()
         self._baud_combo.addItems(_BAUD_RATES)
         self._baud_combo.setCurrentText("115200")
+
+        self._config_btn = QPushButton()
+        self._config_btn.clicked.connect(self._on_config_clicked)
+        self._update_config_button()
 
         self._connect_btn = QPushButton("Connect")
         self._connect_btn.clicked.connect(self._on_connect_toggle)
@@ -60,6 +71,7 @@ class SerialPanel(QWidget):
         layout.addWidget(refresh_btn)
         layout.addWidget(QLabel("Baud:"))
         layout.addWidget(self._baud_combo)
+        layout.addWidget(self._config_btn)
         layout.addWidget(self._connect_btn)
         layout.addWidget(self._auto_reconnect_cb)
         clear_btn = QPushButton("Clear")
@@ -79,6 +91,15 @@ class SerialPanel(QWidget):
         ports = [p.device for p in serial.tools.list_ports.comports()]
         self._port_combo.addItems(ports)
 
+    def _on_config_clicked(self):
+        dlg = SerialConfigDialog(self._settings, self)
+        if dlg.exec():
+            self._update_config_button()
+
+    def _update_config_button(self):
+        self._config_btn.setText(config_summary(self._settings))
+        self._config_btn.setToolTip(config_tooltip(self._settings))
+
     def _on_connect_toggle(self):
         if self._connected:
             self.disconnect_requested.emit()
@@ -92,6 +113,7 @@ class SerialPanel(QWidget):
         self._connect_btn.setText("Disconnect" if connected else "Connect")
         self._port_combo.setEnabled(not connected)
         self._baud_combo.setEnabled(not connected)
+        self._config_btn.setEnabled(not connected)
 
     def auto_reconnect(self) -> bool:
         return self._auto_reconnect_cb.isChecked()

@@ -23,6 +23,8 @@ class AppSettings:
         "message": "#f8f8f2",
     }
 
+    _TX_DEFAULT = "#8be9fd"
+
     _BUFFER_DEFAULT = 100_000
     _BUFFER_MIN = 1_000
     _BUFFER_MAX = 500_000
@@ -159,6 +161,68 @@ class AppSettings:
 
     def set_auto_reconnect(self, val: bool) -> None:
         self._qs.setValue("serial/auto_reconnect", val)
+
+    # --- Serial connection options ---
+
+    def serial_databits(self) -> int:
+        v = self._qs.value("serial/databits", 8, type=int)
+        return v if v in (5, 6, 7, 8) else 8
+
+    def set_serial_databits(self, val: int) -> None:
+        if val in (5, 6, 7, 8):
+            self._qs.setValue("serial/databits", val)
+
+    def serial_parity(self) -> str:
+        v = self._qs.value("serial/parity", "N")
+        return v if v in ("N", "E", "O", "M", "S") else "N"
+
+    def set_serial_parity(self, val: str) -> None:
+        if val in ("N", "E", "O", "M", "S"):
+            self._qs.setValue("serial/parity", val)
+
+    def serial_stopbits(self) -> str:
+        v = self._qs.value("serial/stopbits", "1")
+        return v if v in ("1", "1.5", "2") else "1"
+
+    def set_serial_stopbits(self, val: str) -> None:
+        if val in ("1", "1.5", "2"):
+            self._qs.setValue("serial/stopbits", val)
+
+    def serial_flow(self) -> str:
+        v = self._qs.value("serial/flow", "none")
+        return v if v in ("none", "rtscts", "xonxoff") else "none"
+
+    def set_serial_flow(self, val: str) -> None:
+        if val in ("none", "rtscts", "xonxoff"):
+            self._qs.setValue("serial/flow", val)
+
+    def serial_dtr(self) -> bool:
+        return self._qs.value("serial/dtr", True, type=bool)
+
+    def set_serial_dtr(self, val: bool) -> None:
+        self._qs.setValue("serial/dtr", val)
+
+    def serial_rts(self) -> bool:
+        return self._qs.value("serial/rts", True, type=bool)
+
+    def set_serial_rts(self, val: bool) -> None:
+        self._qs.setValue("serial/rts", val)
+
+    # --- TX (send) ---
+
+    def tx_line_ending(self) -> str:
+        v = self._qs.value("tx/line_ending", "crlf")
+        return v if v in ("none", "lf", "cr", "crlf") else "crlf"
+
+    def set_tx_line_ending(self, val: str) -> None:
+        if val in ("none", "lf", "cr", "crlf"):
+            self._qs.setValue("tx/line_ending", val)
+
+    def tx_color(self) -> str:
+        return self._qs.value("color/tx", self._TX_DEFAULT)
+
+    def set_tx_color(self, color: str) -> None:
+        self._qs.setValue("color/tx", color)
 
     # --- Theme ---
 
