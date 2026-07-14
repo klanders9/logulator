@@ -94,14 +94,14 @@ class FileViewer(QMainWindow):
         self._filtered_box, self._filtered_header = pane_with_header(
             self._filtered_pane, "Filtered"
         )
+        # ---- Filter bar (no settings persistence for file viewers) ----
+        self._filter_bar = FilterBar(settings=None, parent=None)
+        self._filtered_box.layout().insertWidget(1, self._filter_bar)
         self._filtered_box.hide()
 
         self._splitter = QSplitter(Qt.Orientation.Vertical)
         self._splitter.addWidget(raw_box)
         self._splitter.addWidget(self._filtered_box)
-
-        # ---- Filter bar (no settings persistence for file viewers) ----
-        self._filter_bar = FilterBar(settings=None, parent=None)
 
         # ---- Find bar ----
         self._find_bar = FindBar()
@@ -112,7 +112,6 @@ class FileViewer(QMainWindow):
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(0)
-        body_layout.addWidget(self._filter_bar)
         body_layout.addWidget(self._splitter, stretch=1)
         body_layout.addWidget(self._find_bar)
 
@@ -261,18 +260,29 @@ class FileViewer(QMainWindow):
     def _on_filters_changed(self, rules: list, mode: str) -> None:
         self._rules = rules
         self._filter_mode = mode
+        self._update_filtered_visibility()
         if rules:
-            if not self._splitter_initialized:
-                self._splitter_initialized = True
-                h = self._splitter.height()
-                if h > 0:
-                    self._splitter.setSizes([int(h * 0.6), int(h * 0.4)])
-            self._filtered_box.show()
             if not self._loading:
                 self._rebuild_filtered_pane()
             # During loading, _on_chunk_ready appends matching lines in real-time;
             # _on_load_complete does a full rebuild when done.
             self._update_pane_headers()
+
+    def _ensure_filtered_box_visible(self) -> None:
+        if not self._splitter_initialized:
+            self._splitter_initialized = True
+            h = self._splitter.height()
+            if h > 0:
+                self._splitter.setSizes([int(h * 0.6), int(h * 0.4)])
+        self._filtered_box.show()
+
+    def _update_filtered_visibility(self) -> None:
+        # The filter bar's input row now lives above the filtered pane, so the
+        # container must stay visible while it's open even before any rule
+        # exists — otherwise there's no way to reach it to add the first rule.
+        show = bool(self._rules) or self._filter_bar.is_input_bar_open()
+        if show:
+            self._ensure_filtered_box_visible()
         else:
             self._filtered_box.hide()
             self._filtered_pane.clear()
@@ -295,13 +305,19 @@ class FileViewer(QMainWindow):
         self._update_pane_headers()
 
     def _on_filter_action_toggled(self, checked: bool) -> None:
+        if checked:
+            # Show the container before opening the row so it can take focus.
+            self._ensure_filtered_box_visible()
         if checked != self._filter_bar.is_input_bar_open():
             self._filter_bar.toggle_input_bar()
+        if not checked:
+            self._update_filtered_visibility()
 
     def _on_filter_bar_closed(self) -> None:
         self._filter_action.blockSignals(True)
         self._filter_action.setChecked(False)
         self._filter_action.blockSignals(False)
+        self._update_filtered_visibility()
 
     def _on_filter_to_matches(self, text: str) -> None:
         self._filter_bar.add_rule(text, "substring", "include")

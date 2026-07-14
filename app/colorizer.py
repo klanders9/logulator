@@ -9,9 +9,12 @@ from PySide6.QtGui import QColor, QTextCharFormat
 from app.settings import AppSettings
 
 # Zephyr: [HH:MM:SS.mmm,uuu] <level> module: message
+# Also accepts a full-date timestamp variant seen on some boards, e.g.
+# [2026-07-06 11:21:45.726]<inf> module: message — date/space in the
+# bracket and no space before the level tag.
 _ZEPHYR_RE = re.compile(
-    r'^(\[[\d:.,]+\])'
-    r'( <(?:dbg|inf|wrn|err)>)'
+    r'^(\[[\d:.,\- ]+\])'
+    r'( ?<(?:dbg|inf|wrn|err)>)'
     r'( \S+?:)'
     r'( .*)$'
 )

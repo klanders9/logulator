@@ -95,14 +95,21 @@ here to avoid circular imports. Key contents:
 - `pane_with_header(pane, title) -> (container, header_label)` — wraps a pane
   with a slim grey header label; the container goes in the splitter and the
   label can be updated live (filtered match counts). Both windows use this;
-  show/hide the **container** (`_filtered_box`), not the pane itself.
+  show/hide the **container** (`_filtered_box`), not the pane itself. For the
+  filtered pane, both windows insert `FilterBar` into the returned container's
+  layout at index 1 (`container.layout().insertWidget(1, filter_bar)`) —
+  between the header label and the pane — so the filter controls sit directly
+  above the content they filter.
 - `_fmt(hex_color) -> QTextCharFormat`, `_PANE_STYLE`, `_PLAIN_COLOR`,
   `_DEFAULT_CAP` — shared style constants.
 
 ### `app/ui/filter_bar.py` — `FilterBar(QWidget)`
 Compact two-part filter UI. Constructor: `FilterBar(settings=None, parent=None)`.
 When `settings` is `None` (file viewer), all state is in-memory only — nothing
-is persisted to `AppSettings`.
+is persisted to `AppSettings`. Lives inside the filtered pane's container
+(inserted into `pane_with_header`'s layout, between the header label and the
+pane — see below) in both `MainWindow` and `FileViewer`, so the controls sit
+directly above the content they affect.
 
 - **Input row** (`_input_row`): text input, type selector
   (substring/regex/level/module), include/exclude selector, AND/OR mode
@@ -117,7 +124,11 @@ is persisted to `AppSettings`.
 - `add_rule(value, rule_type, mode)` — programmatic rule injection (used by
   the file viewer find bar's "Filter to matches" button).
 - `toggle_input_bar()` / `is_input_bar_open() -> bool` — called by the
-  toolbar action.
+  toolbar action. `is_input_bar_open()` is backed by an explicit `_input_open`
+  flag rather than `_input_row.isVisible()`: since the bar now lives inside
+  the filtered pane's container (which itself may be hidden when no rules are
+  active), Qt's composed visibility would report `False` even while the row
+  is logically open, breaking the open/close toggle.
 
 ### `app/ui/serial_panel.py` — `SerialPanel(QWidget)`
 Constructor: `SerialPanel(settings=None, parent=None)` (creates its own
@@ -219,7 +230,10 @@ Two modes:
 - `syntax` — line parsed into segments, each colored independently. Tries
   three formats in order:
   1. **Zephyr** `[timestamp] <level> module: message` — four segments colored
-     as timestamp / level / module / message.
+     as timestamp / level / module / message. The timestamp bracket also
+     accepts a full-date variant (e.g. `[2026-07-06 11:21:45.726]`) and the
+     space before `<level>` is optional, since some boards emit
+     `[...]<inf> module: msg` with no separating space.
   2. **Syslog ISO 8601** `2024-01-02T10:23:45.000+00:00 host proc[pid]: msg`
   3. **Syslog traditional** `Jan  2 10:23:45 host proc[pid]: msg`
   For syslog formats: timestamp → timestamp color, hostname → plain grey,
@@ -326,7 +340,9 @@ and any pending find-bar search so they cover the complete file.
 static files. The serial window's `buffer_cap` setting does not apply here.
 
 **Filter bar:** Same `FilterBar` widget with `settings=None` (in-memory, not
-persisted). The toolbar `▽ Filter` action toggles it. `_rebuild_filtered_pane()`
+persisted), inserted into the filtered pane's container above the pane
+(same placement and same visibility rules as `MainWindow` — see its "Filter
+bar" section). The toolbar `▽ Filter` action toggles it. `_rebuild_filtered_pane()`
 iterates all `_raw_pane` document blocks so it always covers the full loaded file.
 
 **Find bar:** `FindBar` docked at the bottom, hidden until Ctrl+F; search
@@ -375,9 +391,10 @@ Composes all panels. Key behaviors:
 **Layout:** Toolbar at top with `New Window` (spawns a new `MainWindow` via
 `open_new()`), `▽ Filter` (checkable, toggles `FilterBar` input row), and
 `⚙ Settings` (checkable, toggles sidebar). Central widget
-uses `QHBoxLayout`: left side holds `FilterBar` at top, then `SerialPanel`,
-then the vertical splitter (stretch=1), then `FindBar` (hidden until Ctrl+F),
-then `SendBar`; right side is `SettingsSidebar`
+uses `QHBoxLayout`: left side holds `SerialPanel`, then the vertical splitter
+(stretch=1) — `FilterBar` lives inside the splitter, above the filtered pane
+(see Pane headers below) — then `FindBar` (hidden until Ctrl+F), then
+`SendBar`; right side is `SettingsSidebar`
 (fixed 280 px, hidden when collapsed). Menu bar has a `File` menu with
 `New Window` (Ctrl+N), `Open Log File…` (Ctrl+O), a `Recent Files` submenu
 (last 10 paths, greyed out if the file no longer exists), and a `Help` menu
@@ -391,7 +408,9 @@ restored on startup.
 "Filtered — N of M lines" (updated on rebuild, clear, and the 1 s status
 timer). The filtered **container** (`_filtered_box`) is what gets
 shown/hidden, not the pane widget. The raw pane shows a placeholder hint
-before first connect; the filtered pane shows "No lines match…".
+before first connect; the filtered pane shows "No lines match…". `FilterBar`
+is inserted into the filtered container's layout (index 1, between the
+header label and the pane) — see "Filter bar" below.
 
 **Find:** `FindBar` + `FindController` over the raw pane (Ctrl+F). "Filter to
 matches" adds the search text as a substring include rule on the filter bar.
@@ -401,9 +420,19 @@ the session log in Finder/Explorer (`_reveal_in_file_manager`, platform
 branches: `open -R` / `explorer /select,` / `QDesktopServices` folder open).
 
 **Filter bar:** `FilterBar()` (no settings — all state is in-memory, not
-persisted). The `▽ Filter` toolbar action is kept in sync with the bar's
-visibility (including Escape-to-close). On startup, `_on_filters_changed` is
-called with the empty initial rules (filtered pane stays hidden).
+persisted). Lives inside the filtered pane's container, above the pane
+itself, so the controls sit next to the content they filter. The `▽ Filter`
+toolbar action is kept in sync with the bar's visibility (including
+Escape-to-close). Because the filtered container is otherwise hidden until a
+rule is added, `_update_filtered_visibility()` shows it whenever
+`self._rules` is non-empty **or** `self._filter_bar.is_input_bar_open()` —
+otherwise there would be no way to reach the input row to add the first
+rule. `_ensure_filtered_box_visible()` (also used by `_update_filtered_visibility`)
+is called *before* `self._filter_bar.toggle_input_bar()` when opening, so the
+input field's `setFocus()` call lands after the container is actually
+visible — a hidden ancestor would otherwise swallow the focus request. On
+startup, `_on_filters_changed` is called with the empty initial rules
+(filtered pane stays hidden).
 
 **Display panes:** `_raw_pane` and `_filtered_pane` are `LogPane` instances
 (from `app/ui/log_pane.py`). Both panes emit `file_dropped(Path)` which is
@@ -515,6 +544,10 @@ Fusion style and palette are applied before any widgets are created.
   [00:00:01.234,567] <err> my_module: Something failed: -5
 Level tags: `<dbg>` `<inf>` `<wrn>` `<err>`
 
+A full-date timestamp variant with no space before the level tag is also
+recognized by syntax-mode colorization:
+  [2026-07-06 11:21:45.726]<inf> telit_modem: comm_state_machine state=0
+
 **Syslog traditional** (colorization in syntax/level modes; filters work on raw text):
   Jun 14 10:23:45 hostname systemd[1]: Started network.target.
 
@@ -554,7 +587,10 @@ Implementation complete and tested on macOS. All core features working:
   at the bottom; scrolling up pauses auto-scroll without any toggle
 - Compact filter bar: collapsible input row (▽ Filter toolbar button, Escape
   to close) + horizontal chip strip showing active rules; strip hidden when
-  no rules active; filter rules are in-memory only (not persisted)
+  no rules active; filter rules are in-memory only (not persisted); the bar
+  sits above the filtered pane (inside its container) rather than at the top
+  of the window, so the controls stay next to the content they affect
+  (UX round, 2026-07-13)
 - Multiple serial connection windows: "New Window" toolbar button in all
   windows spawns an additional independent serial monitor; each has its own
   port, log writer, and display; app quits when all windows close

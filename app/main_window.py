@@ -114,6 +114,8 @@ class MainWindow(QMainWindow):
         self._filtered_box, self._filtered_header = pane_with_header(
             self._filtered_pane, "Filtered"
         )
+        self._filter_bar = FilterBar()
+        self._filtered_box.layout().insertWidget(1, self._filter_bar)
         self._filtered_box.hide()
 
         self._splitter = QSplitter(Qt.Orientation.Vertical)
@@ -121,7 +123,6 @@ class MainWindow(QMainWindow):
         self._splitter.addWidget(self._filtered_box)
 
         self._serial_panel = SerialPanel(self._settings)
-        self._filter_bar = FilterBar()
         self._send_bar = SendBar(self._settings)
         self._find_bar = FindBar()
         self._find = FindController(self._find_bar, self._raw_pane, self)
@@ -130,7 +131,6 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(4)
-        left_layout.addWidget(self._filter_bar)
         left_layout.addWidget(self._serial_panel)
         left_layout.addWidget(self._splitter, stretch=1)
         left_layout.addWidget(self._find_bar)
@@ -400,14 +400,25 @@ class MainWindow(QMainWindow):
     def _on_filters_changed(self, rules: list, mode: str):
         self._rules = rules
         self._filter_mode = mode
+        self._update_filtered_visibility()
         if rules:
-            if not self._splitter_initialized:
-                self._splitter_initialized = True
-                h = self._splitter.height()
-                if h > 0:
-                    self._splitter.setSizes([int(h * 0.6), int(h * 0.4)])
-            self._filtered_box.show()
             self._rebuild_filtered_pane()
+
+    def _ensure_filtered_box_visible(self):
+        if not self._splitter_initialized:
+            self._splitter_initialized = True
+            h = self._splitter.height()
+            if h > 0:
+                self._splitter.setSizes([int(h * 0.6), int(h * 0.4)])
+        self._filtered_box.show()
+
+    def _update_filtered_visibility(self):
+        # The filter bar's input row now lives above the filtered pane, so the
+        # container must stay visible while it's open even before any rule
+        # exists — otherwise there's no way to reach it to add the first rule.
+        show = bool(self._rules) or self._filter_bar.is_input_bar_open()
+        if show:
+            self._ensure_filtered_box_visible()
         else:
             self._filtered_box.hide()
             self._filtered_pane.clear()
@@ -505,13 +516,19 @@ class MainWindow(QMainWindow):
         apply_palette(QApplication.instance(), theme)
 
     def _on_filter_action_toggled(self, checked: bool):
+        if checked:
+            # Show the container before opening the row so it can take focus.
+            self._ensure_filtered_box_visible()
         if checked != self._filter_bar.is_input_bar_open():
             self._filter_bar.toggle_input_bar()
+        if not checked:
+            self._update_filtered_visibility()
 
     def _on_filter_bar_closed(self):
         self._filter_action.blockSignals(True)
         self._filter_action.setChecked(False)
         self._filter_action.blockSignals(False)
+        self._update_filtered_visibility()
 
     def _on_sidebar_toggle(self, checked: bool):
         self._sidebar.setVisible(checked)

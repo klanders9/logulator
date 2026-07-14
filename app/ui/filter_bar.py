@@ -133,6 +133,7 @@ class FilterBar(QWidget):
         ir.addWidget(add_btn)
 
         self._input_row.setVisible(_input_bar_open)
+        self._input_open = _input_bar_open
 
         # ---- Horizontal chip strip ----
         self._chip_container = QWidget()
@@ -173,6 +174,7 @@ class FilterBar(QWidget):
 
     def _close_input_bar(self):
         self._input_row.setVisible(False)
+        self._input_open = False
         if self._settings is not None:
             self._settings.set_filter_bar_open(False)
         self.input_bar_closed.emit()
@@ -180,17 +182,22 @@ class FilterBar(QWidget):
     # ---- Public API ----
 
     def toggle_input_bar(self):
-        if self._input_row.isVisible():
+        # Tracked explicitly rather than via _input_row.isVisible(): the row
+        # now lives inside a container (the filtered pane box) that may itself
+        # be hidden, and Qt's composed isVisible() would report False even
+        # while the row is logically "open" from the caller's perspective.
+        if self._input_open:
             self._close_input_bar()
         else:
             self._input_row.setVisible(True)
+            self._input_open = True
             if self._settings is not None:
                 self._settings.set_filter_bar_open(True)
             self._input.setFocus()
             self._input.selectAll()
 
     def is_input_bar_open(self) -> bool:
-        return self._input_row.isVisible()
+        return self._input_open
 
     def get_rules(self) -> list:
         return list(self._rules)
