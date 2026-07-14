@@ -12,12 +12,16 @@ A cross-platform desktop GUI for monitoring and filtering serial log output.
 - Syntax colorization with configurable per-level and per-field colors; understands Zephyr, syslog (traditional and ISO 8601), and generic keyword-based severity detection
 - Smart scroll: auto-scrolls to new output only when already at the bottom
 - Double-click a line in the filtered pane to jump to and select it in the raw pane
+- Send characters out the serial port with the TX bar (Enter to send, ↑/↓ history, CRLF/LF/CR/None line ending); sent lines are echoed to the display and recorded in the session log with a `>> ` marker
+- Advanced serial configuration (data bits, parity, stop bits, flow control, initial DTR/RTS state) via the config dialog next to the port selector
+- Auto-reconnect: automatically retries the connection after an unexpected disconnect, preserving the log file and display
 - Multiple serial connection windows: **New Window** toolbar button opens an additional independent monitor on any port
 - Open log files in standalone viewer windows (File → Open Log File…, drag-and-drop, or **Open File…** in any viewer toolbar)
 - File viewer: filter bar, inline find (Ctrl+F), **Follow mode** to tail live-appended files, and **⚙ Settings** dialog
 - Recent Files submenu (last 10 opened files, greyed out if unavailable)
 - Help → About dialog with version, license, and GitHub link
-- User-selectable app theme (Dracula or VS Code Dark) in the settings sidebar; switches live; theme-matched pane backgrounds
+- User-selectable app theme (Dracula or VS Code Dark) and font size in the settings sidebar; switches live; theme-matched pane backgrounds
+- Status bar shows session runtime, line count, and log file size; click the filename to reveal it in Finder/Explorer
 
 ## Requirements
 
