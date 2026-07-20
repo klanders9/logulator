@@ -60,6 +60,18 @@ def _keyword_level(line: str) -> Optional[str]:
     return None
 
 
+def detect_level(line: str) -> Optional[str]:
+    """Detect a line's severity level key ('dbg'/'inf'/'wrn'/'err') via an
+    explicit <tag> first, falling back to a keyword scan. Independent of the
+    active colorization mode — used by level-mode colorization and by the
+    minimap, which shows severity regardless of whether syntax or level mode
+    is selected."""
+    m = _LEVEL_RE.search(line)
+    if m:
+        return m.group(1)
+    return _keyword_level(line)
+
+
 class Colorizer:
     def __init__(self, settings: AppSettings):
         self._s = settings
@@ -75,11 +87,7 @@ class Colorizer:
         return self._level(line)
 
     def _level(self, line: str) -> List[Tuple[str, QTextCharFormat]]:
-        # Prefer explicit <tag> (Zephyr), fall back to keyword scan.
-        m = _LEVEL_RE.search(line)
-        if m:
-            return [(line, _fmt(self._s.level_color(m.group(1))))]
-        level = _keyword_level(line)
+        level = detect_level(line)
         if level:
             return [(line, _fmt(self._s.level_color(level)))]
         return [(line, _fmt("#cccccc"))]

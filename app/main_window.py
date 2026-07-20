@@ -10,6 +10,7 @@ from typing import List, Optional, Tuple
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QAction,
+    QColor,
     QDesktopServices,
     QFont,
     QKeySequence,
@@ -31,7 +32,7 @@ from PySide6.QtWidgets import (
 
 from app import filter_engine
 from app.theme import apply_palette
-from app.colorizer import Colorizer
+from app.colorizer import Colorizer, detect_level
 from app.log_writer import LogWriter
 from app.serial_worker import SerialWorker
 from app.settings import AppSettings
@@ -48,6 +49,7 @@ from app.ui.log_pane import (
     make_pane,
     pane_with_header,
 )
+from app.ui.minimap import Minimap
 from app.ui.send_bar import SendBar
 from app.ui.serial_panel import SerialPanel
 from app.ui.settings_sidebar import SettingsSidebar
@@ -110,9 +112,17 @@ class MainWindow(QMainWindow):
             "Select a port and press Connect — or drop a .log file here."
         )
         self._filtered_pane.setPlaceholderText("No lines match the active filters.")
-        raw_box, self._raw_header = pane_with_header(self._raw_pane, "Raw")
+
+        # Minimaps: colored-band overview beside each pane, optional (Settings
+        # sidebar), off by default.
+        self._minimap = Minimap()
+        self._minimap.position_clicked.connect(self._on_minimap_clicked)
+        self._filtered_minimap = Minimap()
+        self._filtered_minimap.position_clicked.connect(self._on_filtered_minimap_clicked)
+
+        raw_box, self._raw_header = pane_with_header(self._raw_pane, "Raw", self._minimap)
         self._filtered_box, self._filtered_header = pane_with_header(
-            self._filtered_pane, "Filtered"
+            self._filtered_pane, "Filtered", self._filtered_minimap
         )
         self._filter_bar = FilterBar()
         self._filtered_box.layout().insertWidget(1, self._filter_bar)
@@ -224,11 +234,17 @@ class MainWindow(QMainWindow):
         self._sidebar.buffer_cap_changed.connect(self._on_buffer_cap_changed)
         self._sidebar.font_size_changed.connect(self._on_font_size_changed)
         self._find_bar.filter_to_matches.connect(self._on_filter_to_matches)
+        self._raw_pane.verticalScrollBar().valueChanged.connect(self._update_minimap_viewport)
+        self._raw_pane.verticalScrollBar().rangeChanged.connect(self._update_minimap_viewport)
+        self._filtered_pane.verticalScrollBar().valueChanged.connect(self._update_filtered_minimap_viewport)
+        self._filtered_pane.verticalScrollBar().rangeChanged.connect(self._update_filtered_minimap_viewport)
 
         # Apply persisted buffer cap (overrides _DEFAULT_CAP set in LogPane.__init__)
         initial_cap = self._settings.buffer_cap()
         self._raw_pane.set_cap(initial_cap)
         self._filtered_pane.set_cap(initial_cap)
+        self._minimap.set_cap(initial_cap)
+        self._filtered_minimap.set_cap(initial_cap)
 
         # Restore geometry
         geometry = self._settings.load_geometry()
@@ -241,10 +257,23 @@ class MainWindow(QMainWindow):
 
         # Sync filter state from persisted settings (filter bar loads rules in __init__)
         self._on_filters_changed(self._filter_bar.get_rules(), self._filter_bar.get_mode())
+        self._apply_minimap_settings()
+        self._update_minimap_viewport()
+        self._update_filtered_minimap_viewport()
 
     # ------------------------------------------------------------------
     # Colorization helpers
     # ------------------------------------------------------------------
+
+    def _minimap_color_for(self, line: str) -> QColor:
+        if line.startswith(">> "):
+            return QColor(self._settings.tx_color())
+        if line.startswith("---"):
+            return QColor("#555555")
+        level = detect_level(line)
+        if level:
+            return QColor(self._settings.level_color(level))
+        return QColor("#444444")
 
     def _get_segments(self, line: str, pane: str) -> List[Tuple[str, QTextCharFormat]]:
         """Return (text, format) segments. pane is 'raw' or 'filtered'."""
@@ -363,8 +392,12 @@ class MainWindow(QMainWindow):
     def _append_separator(self, text: str):
         sep_fmt = _fmt("#555555")
         self._raw_pane.append_line([(text, sep_fmt)])
+        if self._minimap.isVisible():
+            self._minimap.append_color(self._minimap_color_for(text))
         if self._filtered_pane.isVisible():
             self._filtered_pane.append_line([(text, sep_fmt)])
+            if self._filtered_minimap.isVisible():
+                self._filtered_minimap.append_color(self._minimap_color_for(text))
 
     # ------------------------------------------------------------------
     # Outgoing data
@@ -380,8 +413,12 @@ class MainWindow(QMainWindow):
         self._log_writer.write(b">> " + text.encode("utf-8") + b"\n")
         echo = ">> " + text
         self._raw_pane.append_line(self._get_segments(echo, "raw"))
+        if self._minimap.isVisible():
+            self._minimap.append_color(self._minimap_color_for(echo))
         if self._rules and filter_engine.match(echo, self._rules, self._filter_mode):
             self._filtered_pane.append_line(self._get_segments(echo, "filtered"))
+            if self._filtered_minimap.isVisible():
+                self._filtered_minimap.append_color(self._minimap_color_for(echo))
 
     # ------------------------------------------------------------------
     # Incoming data
@@ -389,9 +426,13 @@ class MainWindow(QMainWindow):
 
     def _on_new_line(self, line: str):
         self._raw_pane.append_line(self._get_segments(line, "raw"))
+        if self._minimap.isVisible():
+            self._minimap.append_color(self._minimap_color_for(line))
         self._line_count += 1
         if self._rules and filter_engine.match(line, self._rules, self._filter_mode):
             self._filtered_pane.append_line(self._get_segments(line, "filtered"))
+            if self._filtered_minimap.isVisible():
+                self._filtered_minimap.append_color(self._minimap_color_for(line))
 
     # ------------------------------------------------------------------
     # Filters
@@ -437,6 +478,8 @@ class MainWindow(QMainWindow):
         sb = self._filtered_pane.verticalScrollBar()
         sb.setValue(sb.maximum())
         self._update_pane_headers()
+        if self._filtered_minimap.isVisible():
+            self._rebuild_filtered_minimap()
 
     def _rebuild_raw_pane(self):
         doc = self._raw_pane.document()
@@ -452,6 +495,8 @@ class MainWindow(QMainWindow):
         self._raw_pane.setUpdatesEnabled(True)
         sb = self._raw_pane.verticalScrollBar()
         sb.setValue(sb.maximum())
+        if self._minimap.isVisible():
+            self._rebuild_raw_minimap()
 
     # ------------------------------------------------------------------
     # UI controls
@@ -477,13 +522,81 @@ class MainWindow(QMainWindow):
     def _on_buffer_cap_changed(self, cap: int) -> None:
         self._raw_pane.set_cap(cap)
         self._filtered_pane.set_cap(cap)
+        self._minimap.set_cap(cap)
+        self._filtered_minimap.set_cap(cap)
 
     def _on_clear(self):
         self._raw_pane.clear()
+        self._minimap.clear()
         if self._filtered_pane.isVisible():
             self._filtered_pane.clear()
+            self._filtered_minimap.clear()
         self._line_count = 0
         self._update_pane_headers()
+
+    def _update_minimap_viewport(self, *_args) -> None:
+        sb = self._raw_pane.verticalScrollBar()
+        total = sb.maximum() + sb.pageStep()
+        if total <= 0:
+            self._minimap.set_viewport(0.0, 1.0)
+            return
+        self._minimap.set_viewport(sb.value() / total, (sb.value() + sb.pageStep()) / total)
+
+    def _on_minimap_clicked(self, frac: float) -> None:
+        sb = self._raw_pane.verticalScrollBar()
+        total = sb.maximum() + sb.pageStep()
+        target = int(frac * total - sb.pageStep() / 2)
+        sb.setValue(max(0, min(sb.maximum(), target)))
+
+    def _update_filtered_minimap_viewport(self, *_args) -> None:
+        sb = self._filtered_pane.verticalScrollBar()
+        total = sb.maximum() + sb.pageStep()
+        if total <= 0:
+            self._filtered_minimap.set_viewport(0.0, 1.0)
+            return
+        self._filtered_minimap.set_viewport(sb.value() / total, (sb.value() + sb.pageStep()) / total)
+
+    def _on_filtered_minimap_clicked(self, frac: float) -> None:
+        sb = self._filtered_pane.verticalScrollBar()
+        total = sb.maximum() + sb.pageStep()
+        target = int(frac * total - sb.pageStep() / 2)
+        sb.setValue(max(0, min(sb.maximum(), target)))
+
+    def _rebuild_raw_minimap(self) -> None:
+        doc = self._raw_pane.document()
+        colors = []
+        if not (doc.blockCount() == 1 and doc.firstBlock().text() == ""):
+            block = doc.begin()
+            while block != doc.end():
+                colors.append(self._minimap_color_for(block.text()))
+                block = block.next()
+        self._minimap.set_colors(colors)
+
+    def _rebuild_filtered_minimap(self) -> None:
+        doc = self._filtered_pane.document()
+        colors = []
+        if not (doc.blockCount() == 1 and doc.firstBlock().text() == ""):
+            block = doc.begin()
+            while block != doc.end():
+                colors.append(self._minimap_color_for(block.text()))
+                block = block.next()
+        self._filtered_minimap.set_colors(colors)
+
+    def _apply_minimap_settings(self) -> None:
+        enabled = self._settings.minimap_enabled()
+        apply_to = self._settings.minimap_apply_to()
+        show_raw = enabled and apply_to in ("all", "raw")
+        show_filtered = enabled and apply_to in ("all", "filtered")
+        self._minimap.setVisible(show_raw)
+        self._filtered_minimap.setVisible(show_filtered)
+        if show_raw:
+            self._rebuild_raw_minimap()
+        else:
+            self._minimap.clear()
+        if show_filtered:
+            self._rebuild_filtered_minimap()
+        else:
+            self._filtered_minimap.clear()
 
     def _update_pane_headers(self):
         if self._filtered_box.isVisible():
@@ -511,6 +624,7 @@ class MainWindow(QMainWindow):
         self._rebuild_raw_pane()
         if self._filtered_pane.isVisible():
             self._rebuild_filtered_pane()
+        self._apply_minimap_settings()
 
     def _on_theme_changed(self, theme: str):
         apply_palette(QApplication.instance(), theme)
@@ -579,6 +693,8 @@ class MainWindow(QMainWindow):
             f"Runtime: {runtime}  |  Lines: {self._line_count:,}  |  Size: {size_str}"
         )
         self._update_pane_headers()
+        self._update_minimap_viewport()
+        self._update_filtered_minimap_viewport()
 
     # ------------------------------------------------------------------
     # File viewer

@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QMimeData, Signal
 from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
-from PySide6.QtWidgets import QLabel, QTextEdit, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QTextEdit, QVBoxLayout, QWidget
 
 _DEFAULT_CAP = 100_000
 _PANE_STYLE = (
@@ -123,10 +123,15 @@ def doc_line_count(pane: LogPane) -> int:
     return n
 
 
-def pane_with_header(pane: LogPane, title: str) -> Tuple[QWidget, QLabel]:
+def pane_with_header(
+    pane: LogPane, title: str, side_widget: Optional[QWidget] = None
+) -> Tuple[QWidget, QLabel]:
     """Wrap a pane in a container with a slim header label above it.
     Returns (container, header_label) — the container goes in the splitter,
-    the label can be updated live (e.g. filtered match counts)."""
+    the label can be updated live (e.g. filtered match counts). If
+    side_widget is given (e.g. a Minimap), it's placed beside the pane,
+    below the header, so it lines up with the pane's rows rather than
+    spanning the header too."""
     header = QLabel(title)
     header.setStyleSheet("color: #999999; font-size: 11px; padding: 1px 4px;")
     container = QWidget()
@@ -134,5 +139,14 @@ def pane_with_header(pane: LogPane, title: str) -> Tuple[QWidget, QLabel]:
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(1)
     layout.addWidget(header)
-    layout.addWidget(pane, stretch=1)
+    if side_widget is not None:
+        content = QWidget()
+        content_layout = QHBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+        content_layout.addWidget(pane, stretch=1)
+        content_layout.addWidget(side_widget)
+        layout.addWidget(content, stretch=1)
+    else:
+        layout.addWidget(pane, stretch=1)
     return container, header

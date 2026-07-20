@@ -27,6 +27,9 @@ _APPLY_VALUES = ["all", "raw", "filtered", "none"]
 _THEME_LABELS = ["Dracula", "VS Code Dark"]
 _THEME_VALUES = ["dracula", "vscode"]
 
+_MINIMAP_APPLY_LABELS = ["Both panes", "Raw only", "Filtered only"]
+_MINIMAP_APPLY_VALUES = ["all", "raw", "filtered"]
+
 
 _FONT_SIZES = ["8", "9", "10", "11", "12", "13", "14", "16", "18", "20", "24"]
 
@@ -125,6 +128,27 @@ class SettingsSidebar(QWidget):
             lambda c: self._s.set_tx_color(c),
         ))
 
+        layout.addWidget(self._subsection_label("Minimap"))
+        self._minimap_cb = QCheckBox("Show minimap")
+        self._minimap_cb.setChecked(settings.minimap_enabled())
+        self._minimap_cb.toggled.connect(self._on_minimap_enabled_toggled)
+        layout.addWidget(self._minimap_cb)
+
+        minimap_apply_row = QHBoxLayout()
+        minimap_apply_row.addWidget(QLabel("Apply to:"))
+        self._minimap_apply_combo = QComboBox()
+        self._minimap_apply_combo.addItems(_MINIMAP_APPLY_LABELS)
+        cur_minimap_apply = settings.minimap_apply_to()
+        self._minimap_apply_combo.setCurrentIndex(
+            _MINIMAP_APPLY_VALUES.index(cur_minimap_apply)
+            if cur_minimap_apply in _MINIMAP_APPLY_VALUES else 1
+        )
+        self._minimap_apply_combo.currentIndexChanged.connect(
+            lambda i: self._on_minimap_apply_changed(_MINIMAP_APPLY_VALUES[i])
+        )
+        minimap_apply_row.addWidget(self._minimap_apply_combo, stretch=1)
+        layout.addLayout(minimap_apply_row)
+
         layout.addWidget(self._section_label("Buffer"))
         cap_row = QHBoxLayout()
         cap_row.addWidget(QLabel("Line cap:"), stretch=1)
@@ -212,6 +236,14 @@ class SettingsSidebar(QWidget):
 
     def _set_syntax_color(self, field: str, color: str) -> None:
         self._s.set_syntax_color(field, color)
+
+    def _on_minimap_enabled_toggled(self, checked: bool) -> None:
+        self._s.set_minimap_enabled(checked)
+        self.settings_changed.emit()
+
+    def _on_minimap_apply_changed(self, value: str) -> None:
+        self._s.set_minimap_apply_to(value)
+        self.settings_changed.emit()
 
     def _on_buffer_cap_changed(self, value: int) -> None:
         self._s.set_buffer_cap(value)

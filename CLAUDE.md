@@ -92,16 +92,59 @@ here to avoid circular imports. Key contents:
 - `make_pane(font, cap=None) -> LogPane` — factory used by both windows.
 - `doc_line_count(pane) -> int` — displayed line count (0 for an empty
   document; Qt reports blockCount()==1 when empty).
-- `pane_with_header(pane, title) -> (container, header_label)` — wraps a pane
-  with a slim grey header label; the container goes in the splitter and the
-  label can be updated live (filtered match counts). Both windows use this;
-  show/hide the **container** (`_filtered_box`), not the pane itself. For the
-  filtered pane, both windows insert `FilterBar` into the returned container's
-  layout at index 1 (`container.layout().insertWidget(1, filter_bar)`) —
-  between the header label and the pane — so the filter controls sit directly
-  above the content they filter.
+- `pane_with_header(pane, title, side_widget=None) -> (container, header_label)`
+  — wraps a pane with a slim grey header label; the container goes in the
+  splitter and the label can be updated live (filtered match counts). Both
+  windows use this; show/hide the **container** (`_filtered_box`), not the
+  pane itself. For the filtered pane, both windows insert `FilterBar` into
+  the returned container's layout at index 1
+  (`container.layout().insertWidget(1, filter_bar)`) — between the header
+  label and the pane — so the filter controls sit directly above the content
+  they filter. `side_widget` (e.g. a `Minimap`) is placed beside the pane,
+  below the header, in an inner `QHBoxLayout` — so its bands line up with
+  pane rows rather than spanning the header too.
 - `_fmt(hex_color) -> QTextCharFormat`, `_PANE_STYLE`, `_PLAIN_COLOR`,
   `_DEFAULT_CAP` — shared style constants.
+
+### `app/ui/minimap.py` — `Minimap(QWidget)`
+Slim colored-band strip placed beside a pane via `pane_with_header`'s
+`side_widget` param. One band per tracked line, colored by severity (not a
+literal shrunk-text rendering like Sublime/VS Code — see rationale below).
+Optional and off by default; see `AppSettings.minimap_enabled` /
+`minimap_apply_to` and the Settings sidebar's "Minimap" subsection.
+
+- Maintains its own rolling `List[QColor]`, independent of the `QTextDocument`
+  it sits beside — callers (`MainWindow`, `FileViewer`) push colors in via
+  `append_color(color)` as each line arrives, mirroring `LogPane.append_line`.
+  `set_cap(n)` trims from the front like `LogPane.set_cap`. `set_colors(list)`
+  replaces the whole list (used for backfilling when the minimap is newly
+  enabled, or after a colorization-settings rebuild). `clear()` empties it.
+- `paintEvent` renders by **nearest-neighbor sampling down to the widget's
+  pixel height**, not by aggregating every line: for each pixel row, it picks
+  the color at `index = row * len(colors) // height`. This makes repaint cost
+  O(widget height), not O(line count) — necessary because panes can hold up
+  to 500,000 (serial) or 2,000,000 (file viewer) lines, and repainting is
+  triggered on nearly every appended line. The tradeoff is that an isolated
+  error line surrounded by thousands of other lines may not land on a sampled
+  row and so may not show up in the band — acceptable for an overview widget,
+  not attempted to be fixed with bucketed aggregation (which would cost
+  O(line count) per paint).
+- `set_viewport(start_frac, end_frac)` draws a translucent highlight rect
+  showing the pane's current scroll position; callers recompute this from
+  `pane.verticalScrollBar()` on `valueChanged`/`rangeChanged` (both windows
+  also refresh it opportunistically — `MainWindow` on its 1 Hz status timer,
+  `FileViewer` after `_on_load_complete` — since a pure widget resize can
+  change `pageStep` without emitting either signal).
+- Click or drag emits `position_clicked(fraction: float)`; callers translate
+  that into a `verticalScrollBar().setValue(...)` call, centering the
+  viewport on the clicked point.
+- Callers (see `MainWindow`/`FileViewer` below) guard every `append_color`
+  call with `if minimap.isVisible():` so no work happens while hidden, and
+  call `set_colors([])` — **not** an unguarded document walk — when rebuilding
+  from an empty pane: an empty `QTextDocument` reports `blockCount() == 1`
+  with an empty first block (the same quirk `doc_line_count()` works around),
+  and naively walking it seeds one phantom neutral band before any real line
+  ever arrives.
 
 ### `app/ui/filter_bar.py` — `FilterBar(QWidget)`
 Compact two-part filter UI. Constructor: `FilterBar(settings=None, parent=None)`.
@@ -174,12 +217,17 @@ disconnected); focuses the input on connect. Sending empty text is allowed
 Wraps `QSettings` (org: `logulator`, app: `logulator`) with typed
 getters/setters and hardcoded defaults. Covers: window geometry, splitter
 state, sidebar open/closed, colorization settings (enabled, mode, apply-to,
-per-level colors, per-syntax-field colors), buffer cap, filter state, recent
-files, auto-reconnect, and app theme.
+per-level colors, per-syntax-field colors), buffer cap, minimap
+enabled/apply-to, filter state, recent files, auto-reconnect, and app theme.
 All future persistent settings go through this class.
 
 Buffer cap: `buffer_cap() -> int` / `set_buffer_cap(val: int)`. Default
 100,000, clamped to [1,000, 500,000] on read and write.
+
+Minimap: `minimap_enabled() -> bool` / `set_minimap_enabled(val: bool)` —
+stored under `display/minimap_enabled`, default `False`. `minimap_apply_to()
+-> str` / `set_minimap_apply_to(val: str)` — `'all'`/`'raw'`/`'filtered'`,
+stored under `display/minimap_apply_to`, default `'raw'`.
 
 Filter persistence (main window only — file viewers don't persist):
 - `filter_rules() -> list` / `set_filter_rules(rules: list)` — stored as JSON.
@@ -218,9 +266,16 @@ Theme:
 - `theme() -> str` / `set_theme(val: str)` — `'dracula'` or `'vscode'`.
   Stored under `app/theme`. Default `'dracula'`.
 
-### `app/colorizer.py` — `Colorizer`
+### `app/colorizer.py` — `Colorizer`, `detect_level`
 Reads settings from `AppSettings` and converts a log line string into a list
 of `(text, QTextCharFormat)` segments for insertion into `QTextEdit`.
+
+Module-level `detect_level(line) -> Optional[str]` — the level-detection half
+of level-mode colorization (explicit `<tag>` search, falling back to a
+keyword scan), factored out so it can be reused independent of the active
+colorization mode. `Colorizer._level()` calls it; so does each window's
+`_minimap_color_for()` helper, so the minimap shows severity bands even when
+colorization is set to `syntax` mode or disabled outright.
 
 Two modes:
 - `level` — whole line colored by severity. Checks for a Zephyr `<level>` tag
@@ -271,6 +326,12 @@ Fixed-width (280 px) collapsible panel shown on the right side of
   and color-picker rows for all eight configurable colors (four levels, three
   syntax fields, TX lines). Each color row shows a live swatch; clicking `…`
   opens `QColorDialog`. Emits `settings_changed()` on any change.
+- **Minimap:** "Show minimap" checkbox (`AppSettings.minimap_enabled`,
+  default off) and an apply-to combo (Both panes / Raw only / Filtered only —
+  `AppSettings.minimap_apply_to`, default Raw only). Both emit
+  `settings_changed()`, same as the colorization controls; `MainWindow` and
+  `FileViewer` both call `_apply_minimap_settings()` from their
+  `_on_settings_changed()` handler to show/hide and backfill the minimap(s).
 - **Buffer:** `QSpinBox` for the display line cap (range 1,000–500,000, step
   1,000, default 100,000). Emits `buffer_cap_changed(int)` — a separate
   signal so changes don't trigger a full pane rebuild.
@@ -385,6 +446,20 @@ through `MainWindow`.
 **Colorization:** `_get_segments(line, pane)` follows the same logic as
 `MainWindow`, delegating to a `Colorizer` instance that reads live settings.
 
+**Minimap:** raw and filtered `Minimap` instances, capped to `_FILE_PANE_CAP`
+so trimming never kicks in for static files, gated by
+`AppSettings.minimap_enabled`/`minimap_apply_to` via `_apply_minimap_settings()`
+(same shape as `MainWindow`'s, duplicated per-window like `_get_segments`).
+Colors are appended incrementally in `_on_chunk_ready` (per line, guarded by
+`isVisible()`) rather than computed in one pass after load — a 2,000,000-line
+file loaded in 2,000-line chunks would otherwise mean re-walking the whole
+pane on every chunk. Follow-mode tail appends (`_on_file_changed`) append
+minimap colors the same incremental way. If the minimap is enabled *after*
+a file is already loaded, `_apply_minimap_settings()`'s backfill
+(`_rebuild_raw_minimap()`/`_rebuild_filtered_minimap()`) walks the full
+loaded document once — an acceptable one-time cost since it only happens on
+a deliberate settings change, not per line.
+
 ### `app/main_window.py` — `MainWindow(QMainWindow)`
 Composes all panels. Key behaviors:
 
@@ -466,6 +541,26 @@ connected to `MainWindow.open_file()`.
 enabled/apply-to and delegates to `Colorizer.colorize()` if active for that
 pane. Falls back to a plain `#cccccc` format. `pane` is `'raw'` or
 `'filtered'`.
+
+**Minimap:** `_minimap` and `_filtered_minimap` (`app/ui/minimap.py`), each
+placed beside its pane via `pane_with_header`'s `side_widget` param. Optional
+and off by default — gated by `AppSettings.minimap_enabled`/`minimap_apply_to`
+(Settings sidebar's "Minimap" subsection) via `_apply_minimap_settings()`,
+called from `_on_settings_changed()` and once at startup. `_minimap_color_for(line)`
+maps a line to severity color (TX color for `>> ` lines, grey for `---`
+separators, `AppSettings.level_color()` via `colorizer.detect_level()`
+otherwise, or a neutral grey if no level is detected) — independent of
+whether colorization itself is on or in level/syntax mode. Colors are
+appended incrementally alongside each pane append (`_on_new_line`, `_on_send`,
+`_append_separator`), each guarded by `minimap.isVisible()` so no work happens
+while hidden. `_rebuild_raw_pane()`/`_rebuild_filtered_pane()` each end with a
+guarded call to `_rebuild_raw_minimap()`/`_rebuild_filtered_minimap()` so the
+minimap recolors alongside full pane rebuilds (settings change, filter rule
+change). Viewport highlight and click-to-scroll are wired per pane
+(`_update_minimap_viewport`/`_on_minimap_clicked` and the `_filtered_*`
+equivalents) off `verticalScrollBar().valueChanged`/`rangeChanged`, with a
+periodic refresh on the 1 Hz status timer as a fallback for resizes that
+change `pageStep` without emitting either signal.
 
 **Status bar:**
 - Left: current log filename while connected; "Not connected" otherwise.
@@ -642,6 +737,12 @@ Implementation complete and tested on macOS. All core features working:
   reconnecting… ---" / "--- reconnected ---") are appended to both display
   panes to mark the event; checkbox state persisted via `AppSettings`; clicking
   Disconnect or unchecking the box while reconnecting cancels and ends the session
+- Minimap (colorband-minimap branch, off by default): optional colored-band
+  overview strip beside the raw and/or filtered pane, showing per-line
+  severity color down-sampled to the widget's pixel height; click/drag to
+  jump the pane's scroll position; "Show minimap" checkbox + Both/Raw/Filtered
+  apply-to selector in the settings sidebar, persisted via `AppSettings`;
+  available in both `MainWindow` and `FileViewer`
 
 **Under investigation:**
 - Possible bug where disconnecting and reconnecting reuses the same log

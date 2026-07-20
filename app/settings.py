@@ -94,6 +94,22 @@ class AppSettings:
     def set_syntax_color(self, field: str, color: str) -> None:
         self._qs.setValue(f"color/syntax_{field}", color)
 
+    # --- Minimap ---
+
+    def minimap_enabled(self) -> bool:
+        return self._qs.value("display/minimap_enabled", False, type=bool)
+
+    def set_minimap_enabled(self, val: bool) -> None:
+        self._qs.setValue("display/minimap_enabled", val)
+
+    def minimap_apply_to(self) -> str:
+        v = self._qs.value("display/minimap_apply_to", "raw")
+        return v if v in ("all", "raw", "filtered") else "raw"
+
+    def set_minimap_apply_to(self, val: str) -> None:
+        if val in ("all", "raw", "filtered"):
+            self._qs.setValue("display/minimap_apply_to", val)
+
     # --- Buffer ---
 
     def buffer_cap(self) -> int:
