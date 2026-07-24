@@ -444,6 +444,10 @@ class MainWindow(QMainWindow):
         self._update_filtered_visibility()
         if rules:
             self._rebuild_filtered_pane()
+        else:
+            self._filtered_pane.clear()
+            self._filtered_minimap.clear()
+            self._update_pane_headers()
 
     def _ensure_filtered_box_visible(self):
         if not self._splitter_initialized:

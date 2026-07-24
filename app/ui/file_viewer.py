@@ -292,6 +292,10 @@ class FileViewer(QMainWindow):
             # During loading, _on_chunk_ready appends matching lines in real-time;
             # _on_load_complete does a full rebuild when done.
             self._update_pane_headers()
+        else:
+            self._filtered_pane.clear()
+            self._filtered_minimap.clear()
+            self._update_pane_headers()
 
     def _ensure_filtered_box_visible(self) -> None:
         if not self._splitter_initialized:
