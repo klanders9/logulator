@@ -7,8 +7,7 @@ match(line, rules) returns True if the line should be displayed."""
 
 import re
 
-_LEVEL_RE = re.compile(r"<(dbg|inf|wrn|err)>")
-_MODULE_RE = re.compile(r"<(?:dbg|inf|wrn|err)>\s+(\S+?):")
+from app.log_format import detect_level, module_of
 
 
 def _matches_rule(line: str, rule: dict) -> bool:
@@ -22,11 +21,14 @@ def _matches_rule(line: str, rule: dict) -> bool:
         except re.error:
             return False
     if t == "level":
-        m = _LEVEL_RE.search(line)
-        return m is not None and m.group(1) == v
+        # Shares detect_level() with the colorizer, so a line shown in the
+        # <err> colour is matched by a level:err rule. Matching only an
+        # explicit <tag> here meant syslog and unstructured lines were
+        # coloured by severity but invisible to level filters.
+        return detect_level(line) == v
     if t == "module":
-        m = _MODULE_RE.search(line)
-        return m is not None and m.group(1).startswith(v)
+        module = module_of(line)
+        return module is not None and module.startswith(v)
     return False
 
 

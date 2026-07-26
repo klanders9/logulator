@@ -4,6 +4,7 @@
 import pytest
 
 from app import filter_engine
+from app.log_format import detect_level
 
 
 def sub(value, mode="include"):
@@ -94,6 +95,42 @@ class TestLevel:
 
     def test_rejects_other_tag(self):
         assert filter_engine.match(ZEPHYR, [lvl("err")], "OR") is False
+
+    def test_agrees_with_the_colorizer_on_keyword_severity(self):
+        """A line the colorizer paints <err> must match a level:err rule.
+
+        Level rules used to require an explicit <tag>, so syslog and
+        unstructured lines were coloured by severity yet invisible to level
+        filters — the same line looked red and did not match "err".
+        """
+        line = "Jun 14 10:23:45 host app[1]: fatal error occurred"
+        assert detect_level(line) == "err"
+        assert filter_engine.match(line, [lvl("err")], "OR") is True
+
+    @pytest.mark.parametrize(
+        "line,level",
+        [
+            ("connection warning raised", "wrn"),
+            ("info: link established", "inf"),
+            ("trace point reached", "dbg"),
+        ],
+    )
+    def test_keyword_levels_are_filterable(self, line, level):
+        assert filter_engine.match(line, [lvl(level)], "OR") is True
+
+    def test_explicit_tag_still_wins_over_a_keyword_in_the_message(self):
+        line = "[00:00:01.000,000] <dbg> mod: an error occurred"
+        assert filter_engine.match(line, [lvl("dbg")], "OR") is True
+        assert filter_engine.match(line, [lvl("err")], "OR") is False
+
+    def test_unleveled_line_matches_nothing(self):
+        line = "just some plain text"
+        for level in ("dbg", "inf", "wrn", "err"):
+            assert filter_engine.match(line, [lvl(level)], "OR") is False
+
+    def test_exclude_by_level_drops_keyword_matches_too(self):
+        line = "Jun 14 10:23:45 host app[1]: fatal error occurred"
+        assert filter_engine.match(line, [lvl("err", "exclude")], "OR") is False
 
 
 class TestModule:

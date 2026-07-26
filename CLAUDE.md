@@ -105,12 +105,29 @@ the worker thread. Worst-case TX latency is one read timeout (0.1 s).
 Rule types:
 - `substring` — plain `in` check
 - `regex` — `re.search`; silently returns False on bad pattern
-- `level` — matches `<dbg>/<inf>/<wrn>/<err>` tag in the line
+- `level` — compares `log_format.detect_level(line)`, so an explicit
+  `<dbg>/<inf>/<wrn>/<err>` tag **or** a keyword-detected severity matches
 - `module` — prefix-matches the module field (after the level tag)
 
 `mode` (`'AND'`/`'OR'`) controls how include rules combine. Exclude rules
 always win regardless of mode. If there are no include rules, all lines pass
 (subject to excludes).
+
+Level rules go through the same `detect_level()` the colorizer and minimap
+use, so what is painted `<err>` is what a `level: err` rule selects. Matching
+only an explicit `<tag>` here meant syslog and unstructured lines were
+coloured by severity but invisible to level filters.
+
+### `app/log_format.py` — pure format parsing
+Stdlib-only home for log-line format knowledge shared by `colorizer.py` and
+`filter_engine.py`: `LEVELS`, `LEVEL_TAG_RE`, `MODULE_RE`, `keyword_level()`,
+`detect_level()` and `module_of()`. Kept free of Qt and `AppSettings` so
+`filter_engine` stays dependency-light and stateless.
+
+`detect_level(line)` is the single definition of a line's severity — explicit
+`<tag>` first, then a case-insensitive, word-boundary-anchored keyword scan
+(`error/err/fatal/critical` → `err`, `warning/warn` → `wrn`, `info/notice` →
+`inf`, `debug/dbg/trace` → `dbg`, checked in that priority order).
 
 ### `app/ui/log_pane.py` — `LogPane`, `make_pane`, shared constants
 Shared `QTextEdit` subclass used by both `MainWindow` and `FileViewer`. Extracted
@@ -316,12 +333,11 @@ Theme:
 Reads settings from `AppSettings` and converts a log line string into a list
 of `(text, QTextCharFormat)` segments for insertion into `QTextEdit`.
 
-Module-level `detect_level(line) -> Optional[str]` — the level-detection half
-of level-mode colorization (explicit `<tag>` search, falling back to a
-keyword scan), factored out so it can be reused independent of the active
-colorization mode. `Colorizer._level()` calls it; so does each window's
-`_minimap_color_for()` helper, so the minimap shows severity bands even when
-colorization is set to `syntax` mode or disabled outright.
+Level detection lives in `app/log_format.py` (`detect_level`, `keyword_level`),
+imported here rather than duplicated. `Colorizer._level()` uses it, so does
+each window's `_minimap_color_for()` helper — so the minimap shows severity
+bands even when colorization is in `syntax` mode or off — and so do `level`
+filter rules, which is what keeps colouring and filtering in agreement.
 
 Two modes:
 - `level` — whole line colored by severity. Checks for a Zephyr `<level>` tag
@@ -843,7 +859,11 @@ Implementation complete and tested on macOS. All core features working:
   `FileLoaderWorker` strips `\r\n` / `\r` via `rstrip("\r\n")`.
 - `LogPane` is defined in `app/ui/log_pane.py` (not `main_window.py`) to
   avoid circular imports between `MainWindow` and `FileViewer`.
-- `filter_engine.py` is stateless and must remain untouched.
+- `filter_engine.py` must remain **stateless**: pure functions only, no
+  instance state, no Qt, no `AppSettings`, no UI coupling. It may be edited,
+  but not turned into something that holds state or reaches into the app.
+  Its only dependency is `app/log_format.py`, which is stdlib-only by the
+  same rule.
 - The project targets Python 3.9 (`requires-python = ">=3.9"`, and the .venv is
   3.9). Avoid new-style union type hints (`X | Y`) until that floor is raised.
 - File viewer Follow mode reads new content in binary mode and tracks a byte

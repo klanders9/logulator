@@ -3,7 +3,8 @@
 
 import pytest
 
-from app.colorizer import Colorizer, detect_level
+from app.colorizer import Colorizer
+from app.log_format import detect_level
 
 ZEPHYR = "[00:00:01.234,567] <inf> my_module: Some message here"
 ZEPHYR_NOSPACE = "[2026-07-06 11:21:45.726]<inf> telit_modem: state=0"

@@ -24,7 +24,8 @@ from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import QApplication, QSplitter
 
 from app import filter_engine
-from app.colorizer import Colorizer, detect_level
+from app.colorizer import Colorizer
+from app.log_format import detect_level
 from app.settings import AppSettings
 from app.theme import apply_palette
 from app.ui.filter_bar import FilterBar
