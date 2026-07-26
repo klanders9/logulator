@@ -40,8 +40,12 @@ def _reveal_in_file_manager(path: Path) -> None:
     if sys.platform == "darwin":
         subprocess.Popen(["open", "-R", str(path)])
     elif sys.platform.startswith("win"):
-        subprocess.Popen(["explorer", "/select,", str(path)])
+        # Explorer wants "/select," and the path as a single argument. Passing
+        # them separately makes it ignore both and open Documents instead.
+        # The path needs native separators too.
+        subprocess.Popen(["explorer", f"/select,{path}"])
     else:
+        # No portable "select this file" equivalent, so open the folder.
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
 
 
