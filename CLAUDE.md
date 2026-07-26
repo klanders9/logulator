@@ -100,7 +100,10 @@ loop drains the queue and writes before each read so all port access stays on
 the worker thread. Worst-case TX latency is one read timeout (0.1 s).
 
 ### `app/filter_engine.py` — stateless functions
-`match(line, rules, mode) -> bool`. Rule dict keys: `type`, `value`, `mode`.
+`match(line, rules, mode) -> bool`. Rule dict keys: `type`, `value`, `mode`,
+and optional `ignore_case` (default `False`; honoured by `substring` and
+`regex` only — level keys are already normalised and module names are
+case-sensitive identifiers).
 
 Rule types:
 - `substring` — plain `in` check
@@ -212,17 +215,18 @@ pane — see below) in both `MainWindow` and `FileViewer`, so the controls sit
 directly above the content they affect.
 
 - **Input row** (`_input_row`): text input, type selector
-  (substring/regex/level/module), include/exclude selector, AND/OR mode
-  toggle, Add button. Hidden by default; toggled by a toolbar action. Escape
-  dismisses it and emits `input_bar_closed`.
+  (substring/regex/level/module), include/exclude selector, an `Aa` match-case
+  toggle (checked by default, so rules stay case-sensitive unless asked
+  otherwise), AND/OR mode toggle, Add button. Hidden by default; toggled by a
+  toolbar action. Escape dismisses it and emits `input_bar_closed`.
 - **Chip strip** (`_chip_scroll`): horizontal scrollable row of `_RuleChip`
   widgets, one per active rule. Each chip shows `+ sub: value` or `− lvl: err`
   with a `×` remove button. Hidden completely when no rules are active.
 - `filters_changed(rules: list, mode: str)` — emitted on any rule/mode change.
 - `input_bar_closed` — emitted when Escape dismisses the input row; used by
   the toolbar action to uncheck itself.
-- `add_rule(value, rule_type, mode)` — programmatic rule injection (used by
-  the file viewer find bar's "Filter to matches" button).
+- `add_rule(value, rule_type, mode, ignore_case=False)` — programmatic rule
+  injection (used by the find bar's "Filter to matches" button).
 - `toggle_input_bar()` / `is_input_bar_open() -> bool` — called by the
   toolbar action. `is_input_bar_open()` is backed by an explicit `_input_open`
   flag rather than `_input_row.isVisible()`: since the bar now lives inside
@@ -446,7 +450,10 @@ Signals:
 - `text_changed(str)` — live as user types (drives debounced search).
 - `go_next` / `go_prev` — Enter / Shift+Enter in the input, or button clicks.
 - `filter_to_matches(str)` — emits current search text; connected to
-  `FilterBar.add_rule()` to add it as a substring include rule.
+  `FilterBar.add_rule()` to add it as a substring include rule, with
+  `ignore_case=True`. `QTextDocument.find` is case-insensitive by default, so
+  a case-sensitive rule would select fewer lines than the match counter had
+  just reported.
 - `closed` — emitted when Escape or the close button hides the bar.
 
 `set_match_status(current, total, has_query)` updates the counter label and

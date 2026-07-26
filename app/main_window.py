@@ -398,7 +398,9 @@ class MainWindow(LogWindowMixin, QMainWindow):
         self._update_pane_headers()
 
     def _on_filter_to_matches(self, text: str) -> None:
-        self._filter_bar.add_rule(text, "substring", "include")
+        # Case-insensitive to mirror QTextDocument.find, so the filtered pane
+        # holds exactly the lines the find counter just reported.
+        self._filter_bar.add_rule(text, "substring", "include", ignore_case=True)
 
     def _set_status_log_clickable(self, clickable: bool) -> None:
         if clickable:

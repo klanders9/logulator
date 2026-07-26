@@ -41,6 +41,8 @@ _TYPE_ABBREV = {"substring": "sub", "regex": "rgx", "level": "lvl", "module": "m
 def _chip_label_text(rule: dict) -> str:
     prefix = "+" if rule.get("mode", "include") == "include" else "−"
     t = _TYPE_ABBREV.get(rule["type"], rule["type"][:3])
+    if rule.get("ignore_case"):
+        t += "/i"
     v = rule["value"]
     if len(v) > 20:
         v = v[:17] + "…"
@@ -117,6 +119,14 @@ class FilterBar(QWidget):
         self._inc_exc_combo = QComboBox()
         self._inc_exc_combo.addItems(["include", "exclude"])
 
+        self._case_btn = QPushButton("Aa")
+        self._case_btn.setCheckable(True)
+        self._case_btn.setChecked(True)
+        self._case_btn.setFixedWidth(34)
+        self._case_btn.setToolTip(
+            "Match case (substring and regex rules)"
+        )
+
         self._mode_btn = QPushButton(f"Mode: {self._mode}")
         self._mode_btn.setCheckable(True)
         self._mode_btn.setChecked(self._mode == "AND")
@@ -129,6 +139,7 @@ class FilterBar(QWidget):
         ir.addWidget(self._input, stretch=1)
         ir.addWidget(self._type_combo)
         ir.addWidget(self._inc_exc_combo)
+        ir.addWidget(self._case_btn)
         ir.addWidget(self._mode_btn)
         ir.addWidget(add_btn)
 
@@ -215,6 +226,7 @@ class FilterBar(QWidget):
             "type": self._type_combo.currentText(),
             "value": value,
             "mode": self._inc_exc_combo.currentText(),
+            "ignore_case": not self._case_btn.isChecked(),
         }
         self._rules.append(rule)
         self._input.clear()
@@ -238,9 +250,20 @@ class FilterBar(QWidget):
         self._chip_scroll.setVisible(bool(self._rules))
         self.filters_changed.emit(list(self._rules), self._mode)
 
-    def add_rule(self, value: str, rule_type: str = "substring", mode: str = "include") -> None:
+    def add_rule(
+        self,
+        value: str,
+        rule_type: str = "substring",
+        mode: str = "include",
+        ignore_case: bool = False,
+    ) -> None:
         """Programmatically add a rule (e.g. from the find bar's 'Filter to matches')."""
-        rule = {"type": rule_type, "value": value, "mode": mode}
+        rule = {
+            "type": rule_type,
+            "value": value,
+            "mode": mode,
+            "ignore_case": ignore_case,
+        }
         self._rules.append(rule)
         self._commit()
 

@@ -39,7 +39,10 @@ class TestRuleManagement:
         with qtbot.waitSignal(bar.filters_changed) as blocker:
             bar.add_rule("boom", "substring", "include")
         rules, mode = blocker.args
-        assert rules == [{"type": "substring", "value": "boom", "mode": "include"}]
+        assert rules == [
+            {"type": "substring", "value": "boom", "mode": "include",
+             "ignore_case": False}
+        ]
         assert mode == "OR"
         assert bar.get_rules() == rules
 
@@ -59,7 +62,8 @@ class TestRuleManagement:
         bar._inc_exc_combo.setCurrentText("exclude")
         bar._add_rule()
         assert bar.get_rules() == [
-            {"type": "module", "value": "net_if", "mode": "exclude"}
+            {"type": "module", "value": "net_if", "mode": "exclude",
+             "ignore_case": False}
         ]
 
     def test_input_is_cleared_after_add(self, bar):
@@ -193,3 +197,37 @@ class TestInputBar:
         bar.toggle_input_bar()
         assert bar._input_row.isVisible() is False
         assert bar.is_input_bar_open() is True
+
+
+class TestCaseSensitivity:
+    def test_match_case_is_on_by_default(self, bar):
+        assert bar._case_btn.isChecked() is True
+
+    def test_rule_added_with_match_case_on_is_case_sensitive(self, bar):
+        bar._input.setText("Error")
+        bar._add_rule()
+        assert bar.get_rules()[0]["ignore_case"] is False
+
+    def test_unchecking_match_case_produces_an_insensitive_rule(self, bar):
+        bar._case_btn.setChecked(False)
+        bar._input.setText("Error")
+        bar._add_rule()
+        assert bar.get_rules()[0]["ignore_case"] is True
+
+    def test_programmatic_add_defaults_to_case_sensitive(self, bar):
+        bar.add_rule("Error")
+        assert bar.get_rules()[0]["ignore_case"] is False
+
+    def test_programmatic_add_can_request_insensitive(self, bar):
+        bar.add_rule("Error", ignore_case=True)
+        assert bar.get_rules()[0]["ignore_case"] is True
+
+    def test_chip_marks_case_insensitive_rules(self):
+        rule = {"type": "substring", "value": "boom", "mode": "include",
+                "ignore_case": True}
+        assert _chip_label_text(rule) == "+ sub/i: boom"
+
+    def test_chip_unmarked_when_case_sensitive(self):
+        rule = {"type": "substring", "value": "boom", "mode": "include",
+                "ignore_case": False}
+        assert _chip_label_text(rule) == "+ sub: boom"

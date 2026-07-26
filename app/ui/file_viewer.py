@@ -217,7 +217,9 @@ class FileViewer(LogWindowMixin, QMainWindow):
             self._update_pane_headers()
 
     def _on_filter_to_matches(self, text: str) -> None:
-        self._filter_bar.add_rule(text, "substring", "include")
+        # Case-insensitive to mirror QTextDocument.find, so the filtered pane
+        # holds exactly the lines the find counter just reported.
+        self._filter_bar.add_rule(text, "substring", "include", ignore_case=True)
         # Open the chip strip if not visible (filter bar shows chips automatically)
         if not self._filter_bar.is_input_bar_open():
             self._filter_action.setChecked(True)

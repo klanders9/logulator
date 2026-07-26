@@ -164,3 +164,37 @@ def test_unknown_mode_falls_back_to_or(mode):
     rules = [sub("alpha"), sub("beta")]
     expected = mode != "AND"
     assert filter_engine.match("alpha only", rules, mode) is expected
+
+
+class TestCaseInsensitiveRules:
+    def test_substring_ignore_case(self):
+        rule = {"type": "substring", "value": "error", "mode": "include",
+                "ignore_case": True}
+        assert filter_engine.match("ERROR here", [rule], "OR") is True
+
+    def test_substring_case_sensitive_by_default(self):
+        assert filter_engine.match("ERROR here", [sub("error")], "OR") is False
+
+    def test_explicit_false_is_case_sensitive(self):
+        rule = {"type": "substring", "value": "error", "mode": "include",
+                "ignore_case": False}
+        assert filter_engine.match("ERROR here", [rule], "OR") is False
+
+    def test_regex_ignore_case(self):
+        rule = {"type": "regex", "value": r"err\w+", "mode": "include",
+                "ignore_case": True}
+        assert filter_engine.match("ERRORS everywhere", [rule], "OR") is True
+
+    def test_regex_case_sensitive_by_default(self):
+        assert filter_engine.match("ERRORS everywhere", [rgx(r"err\w+")], "OR") is False
+
+    def test_ignore_case_applies_to_excludes_too(self):
+        rule = {"type": "substring", "value": "secret", "mode": "exclude",
+                "ignore_case": True}
+        assert filter_engine.match("SECRET payload", [rule], "OR") is False
+
+    def test_ignore_case_is_ignored_for_level_rules(self):
+        """Level keys are already normalised, so the flag is a no-op there."""
+        rule = {"type": "level", "value": "err", "mode": "include",
+                "ignore_case": True}
+        assert filter_engine.match(ZEPHYR_ERR, [rule], "OR") is True

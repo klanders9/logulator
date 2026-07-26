@@ -3,6 +3,7 @@
   type: 'substring' | 'regex' | 'level' | 'module'
   value: str
   mode: 'include' | 'exclude'
+  ignore_case: bool (optional, default False; substring and regex only)
 match(line, rules) returns True if the line should be displayed."""
 
 import re
@@ -13,11 +14,16 @@ from app.log_format import detect_level, module_of
 def _matches_rule(line: str, rule: dict) -> bool:
     t = rule["type"]
     v = rule["value"]
+    # Optional and defaulting to False, so rules written without the key keep
+    # their case-sensitive behaviour. The find bar's "Filter to matches" sets
+    # it, because QTextDocument.find is case-insensitive and the resulting
+    # rule has to select the same lines the counter just reported.
+    ignore_case = bool(rule.get("ignore_case"))
     if t == "substring":
-        return v in line
+        return v.lower() in line.lower() if ignore_case else v in line
     if t == "regex":
         try:
-            return bool(re.search(v, line))
+            return bool(re.search(v, line, re.IGNORECASE if ignore_case else 0))
         except re.error:
             return False
     if t == "level":
