@@ -402,6 +402,12 @@ Fixed-width (280 px) collapsible panel shown on the right side of
   Also a font size dropdown (8–24 pt, persisted via `AppSettings.font_size`,
   default 12) emitting `font_size_changed(int)` — both `MainWindow` and
   `FileViewer` (via its settings dialog) connect it to resize pane fonts live.
+Changes are broadcast: `LogWindowMixin._on_settings_changed()` and
+`_on_font_size_changed()` iterate `open_log_windows()` so every open window
+(serial or viewer) refreshes, not just the one whose sidebar emitted. Buffer
+cap goes through `MainWindow._instances` instead, since file viewers keep
+`_FILE_PANE_CAP`. Theme needs no broadcast — the palette is application-wide.
+
 - **Display / Colorization:** enable checkbox, mode selector (Level/Syntax),
   apply-to selector (All panes / Raw log only / Filtered log only / None),
   and color-picker rows for all eight configurable colors (four levels, three

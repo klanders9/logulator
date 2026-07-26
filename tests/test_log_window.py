@@ -310,3 +310,87 @@ class _StubWorker:
 
     def stop(self):
         pass
+
+
+class TestSettingsReachEveryWindow:
+    """All windows share one AppSettings, so a change must refresh them all."""
+
+    def test_colorization_change_rebuilds_other_windows(self, win, qtbot):
+        other = MainWindow()
+        qtbot.addWidget(other)
+        other.show()
+        try:
+            for w in (win, other):
+                feed(w, *ZEPHYR_LINES)
+            win._settings.set_color_enabled(False)
+            win._on_settings_changed()
+
+            # A plain rebuild leaves one segment per line; verify via the text
+            # surviving intact in both.
+            assert raw_texts(win) == ZEPHYR_LINES
+            assert raw_texts(other) == ZEPHYR_LINES
+            assert other._get_segments(ZEPHYR_LINES[0], "raw")[0][1] is other._plain_fmt
+        finally:
+            other.close()
+
+    def test_minimap_toggle_reaches_other_windows(self, win, qtbot):
+        other = MainWindow()
+        qtbot.addWidget(other)
+        other.show()
+        try:
+            feed(other, *ZEPHYR_LINES)
+            assert not other._minimap.isVisible()
+            win._settings.set_minimap_enabled(True)
+            win._settings.set_minimap_apply_to("raw")
+            win._on_settings_changed()
+            assert other._minimap.isVisible()
+            assert len(other._minimap._colors) == 4
+        finally:
+            other.close()
+
+    def test_font_size_reaches_other_windows(self, win, qtbot):
+        other = MainWindow()
+        qtbot.addWidget(other)
+        other.show()
+        try:
+            win._on_font_size_changed(20)
+            assert other._raw_pane.font().pointSize() == 20
+            assert other._filtered_pane.font().pointSize() == 20
+        finally:
+            other.close()
+
+    def test_buffer_cap_reaches_other_serial_windows(self, win, qtbot):
+        other = MainWindow()
+        qtbot.addWidget(other)
+        other.show()
+        try:
+            win._on_buffer_cap_changed(2_500)
+            assert other._raw_pane._cap == 2_500
+            assert other._minimap._cap == 2_500
+        finally:
+            other.close()
+
+    def test_buffer_cap_leaves_file_viewers_alone(self, win, viewer):
+        """File viewers use _FILE_PANE_CAP; the serial cap must not shrink them."""
+        from app.ui.file_viewer import _FILE_PANE_CAP
+
+        win._on_buffer_cap_changed(2_500)
+        assert viewer._raw_pane._cap == _FILE_PANE_CAP
+
+    def test_settings_change_reaches_file_viewers(self, win, viewer):
+        win._settings.set_minimap_enabled(True)
+        win._settings.set_minimap_apply_to("raw")
+        win._on_settings_changed()
+        assert viewer._minimap.isVisible()
+
+    def test_closed_windows_stop_receiving_updates(self, win, qtbot):
+        from app.ui.log_window import open_log_windows
+
+        other = MainWindow()
+        qtbot.addWidget(other)
+        other.show()
+        assert other in open_log_windows()
+        other.close()
+        assert other not in open_log_windows()
+        # Must not raise against the closed window.
+        win._on_settings_changed()

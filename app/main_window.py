@@ -387,6 +387,11 @@ class MainWindow(LogWindowMixin, QMainWindow):
     # ------------------------------------------------------------------
 
     def _on_buffer_cap_changed(self, cap: int) -> None:
+        # Serial windows only — file viewers keep their own _FILE_PANE_CAP.
+        for window in MainWindow._instances:
+            window._apply_buffer_cap(cap)
+
+    def _apply_buffer_cap(self, cap: int) -> None:
         self._raw_pane.set_cap(cap)
         self._filtered_pane.set_cap(cap)
         self._minimap.set_cap(cap)
@@ -503,6 +508,7 @@ class MainWindow(LogWindowMixin, QMainWindow):
         self._settings.save_geometry(self.saveGeometry())
         self._settings.save_splitter(self._splitter.saveState())
         self._on_disconnect(prompt_clear=False)
+        self._release_log_window()
         if self in MainWindow._instances:
             MainWindow._instances.remove(self)
         super().closeEvent(event)

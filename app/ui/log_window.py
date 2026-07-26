@@ -45,6 +45,17 @@ _NEUTRAL_COLOR = "#444444"     # no detectable level
 # Initial raw/filtered split the first time the filtered pane is revealed.
 _RAW_SPLIT_FRACTION = 0.6
 
+# Every live log window (MainWindow and FileViewer alike). Display settings are
+# shared through one AppSettings, so a change has to reach all of them —
+# rebuilding only the window whose sidebar emitted it left the others showing
+# the old colours, fonts and minimaps until something else forced a rebuild.
+_open_windows: List["LogWindowMixin"] = []
+
+
+def open_log_windows() -> List["LogWindowMixin"]:
+    """Live log windows, in creation order."""
+    return list(_open_windows)
+
 
 def iter_block_texts(doc):
     """Yield the text of every block in a QTextDocument, in order."""
@@ -78,6 +89,12 @@ class LogWindowMixin:
         self._rules: list = []
         self._filter_mode = "OR"
         self._splitter_initialized = False
+        _open_windows.append(self)
+
+    def _release_log_window(self) -> None:
+        """Drop this window from the broadcast list. Call from closeEvent."""
+        if self in _open_windows:
+            _open_windows.remove(self)
 
     def _build_log_panes(
         self,
@@ -375,15 +392,30 @@ class LogWindowMixin:
     # ------------------------------------------------------------------
 
     def _on_settings_changed(self) -> None:
+        """Colorization/minimap settings changed — refresh every window.
+
+        They all read the same AppSettings, so refreshing only the window
+        whose sidebar emitted the change left the rest rendering with the old
+        settings.
+        """
+        for window in open_log_windows():
+            window._apply_display_settings()
+
+    def _apply_display_settings(self) -> None:
         self._rebuild_raw_pane()
         if self._filtered_pane.isVisible():
             self._rebuild_filtered_pane()
         self._apply_minimap_settings()
 
     def _on_theme_changed(self, theme: str) -> None:
+        # Palette is application-wide, so this already reaches every window.
         apply_palette(QApplication.instance(), theme)
 
     def _on_font_size_changed(self, size: int) -> None:
+        for window in open_log_windows():
+            window._apply_font_size(size)
+
+    def _apply_font_size(self, size: int) -> None:
         for pane in (self._raw_pane, self._filtered_pane):
             f = pane.font()
             f.setPointSize(size)

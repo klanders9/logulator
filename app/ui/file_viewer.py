@@ -390,6 +390,7 @@ class FileViewer(LogWindowMixin, QMainWindow):
             self._worker.cancel()
             self._worker.wait(500)
         self.about_to_close.emit()
+        self._release_log_window()
         if self in FileViewer._instances:
             FileViewer._instances.remove(self)
         super().closeEvent(event)
