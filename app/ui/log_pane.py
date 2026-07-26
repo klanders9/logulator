@@ -65,9 +65,21 @@ class LogPane(QTextEdit):
         if line:
             self.line_double_clicked.emit(line)
 
-    def createMimeData(self, selection) -> QMimeData:
+    def createMimeDataFromSelection(self) -> QMimeData:
+        """Put only plain text on the clipboard.
+
+        QTextEdit's default also offers text/html (with the colour spans),
+        text/markdown and ODF, so pasting a log line into any rich-text target
+        carried the colouring along.
+
+        This is the QTextEdit virtual; an earlier `createMimeData(selection)`
+        override matched no Qt hook and never ran.
+
+        QTextCursor.selectedText() separates blocks with U+2029, which pastes
+        as an unreadable single line, so translate those back to newlines.
+        """
         mime = QMimeData()
-        mime.setText(selection.toPlainText())
+        mime.setText(self.textCursor().selectedText().replace(" ", "\n"))
         return mime
 
     def dragEnterEvent(self, event) -> None:

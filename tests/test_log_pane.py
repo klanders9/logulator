@@ -88,12 +88,6 @@ class TestCap:
 
 
 class TestCopyIsPlainText:
-    @pytest.mark.xfail(
-        strict=True,
-        reason="LogPane.createMimeData is not a QTextEdit virtual; the real hook "
-               "is createMimeDataFromSelection(), so the override never runs and "
-               "copy still puts HTML on the clipboard",
-    )
     def test_copy_puts_only_plain_text_on_the_clipboard(self, pane, plain, qapp):
         pane.append_line(
             [("[ts]", _fmt("#666666")), (" <err> boom", _fmt("#ff5555"))],
@@ -109,6 +103,27 @@ class TestCopyIsPlainText:
         mime = qapp.clipboard().mimeData()
         assert mime.text() == "[ts] <err> boom"
         assert not mime.hasHtml()
+
+    def test_multi_line_copy_uses_real_newlines(self, pane, plain, qapp):
+        """QTextCursor.selectedText() separates blocks with U+2029, which
+        pastes as one unreadable line."""
+        append(pane, plain, "first", "second", "third")
+        pane.selectAll()
+        pane.copy()
+        text = qapp.clipboard().mimeData().text()
+        assert text == "first\nsecond\nthird"
+        assert " " not in text
+
+    def test_partial_selection_copies_only_that(self, pane, plain, qapp):
+        append(pane, plain, "alpha", "beta")
+        cursor = pane.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
+        cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock,
+                            QTextCursor.MoveMode.KeepAnchor)
+        pane.setTextCursor(cursor)
+        pane.copy()
+        assert qapp.clipboard().mimeData().text() == "alpha"
+
 
 
 class TestPaneWithHeader:

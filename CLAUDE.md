@@ -138,7 +138,13 @@ Shared `QTextEdit` subclass used by both `MainWindow` and `FileViewer`. Extracte
 here to avoid circular imports. Key contents:
 
 - `LogPane(QTextEdit)`:
-  - `createMimeData` always produces plain text (never HTML).
+  - `createMimeDataFromSelection()` puts **only** `text/plain` on the
+    clipboard. This is the actual QTextEdit virtual; an earlier
+    `createMimeData(selection)` override matched no Qt hook and never ran, so
+    copies really did carry `text/html` (with colour spans), `text/markdown`
+    and ODF. `QTextCursor.selectedText()` separates blocks with U+2029, which
+    is translated back to `\n` — otherwise a multi-line copy pastes as one
+    unreadable line.
   - `append_line(segments, scroll=True)` inserts a line and enforces the
     configurable cap by trimming the oldest block when `document().blockCount()`
     exceeds `self._cap`. Smart scroll: only scrolls to bottom if the pane was
