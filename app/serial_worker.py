@@ -25,6 +25,14 @@ _STOPBITS_MAP = {
     "2": serial.STOPBITS_TWO,
 }
 
+# The read timeout is 0.1 s, so a healthy loop exits well inside this. The
+# margin covers a port open that is still in progress.
+_STOP_TIMEOUT_MS = 3000
+
+# Workers that outlived their stop() deadline. Holding a reference keeps Python
+# from destroying a QThread that is still running, which would crash.
+_orphans = set()
+
 
 class SerialWorker(QThread):
     new_line = Signal(str)
@@ -105,7 +113,32 @@ class SerialWorker(QThread):
                             )
         except serial.SerialException as exc:
             self.error_occurred.emit(str(exc))
+        except Exception as exc:  # noqa: BLE001 — must not die silently
+            # Anything else (a full disk or unmounted volume from LogWriter,
+            # for instance) would otherwise end the thread with no signal,
+            # leaving the UI showing a healthy connection that is dead.
+            self.error_occurred.emit(f"{type(exc).__name__}: {exc}")
 
-    def stop(self):
+    def stop(self, timeout_ms: int = _STOP_TIMEOUT_MS) -> bool:
+        """Ask the run loop to finish and wait for it.
+
+        Bounded because this is called from the GUI thread: `_make_serial()`
+        can block in `open()` on a wedged USB device, and an unbounded wait
+        would freeze the window with no way out.
+
+        A thread that misses the deadline is abandoned rather than terminated
+        — `QThread.terminate()` on a thread executing Python can leave the GIL
+        held and wedge the whole process. It is harmless to leave running:
+        `_running` is already False, so once the blocking open() returns it
+        closes the port and exits without touching the log or emitting lines.
+
+        Returns True if the thread finished within the deadline.
+        """
         self._running = False
-        self.wait()
+        if self.wait(timeout_ms):
+            return True
+        # Destroying a running QThread crashes, so hold a reference until the
+        # thread actually finishes.
+        _orphans.add(self)
+        self.finished.connect(lambda: _orphans.discard(self))
+        return False

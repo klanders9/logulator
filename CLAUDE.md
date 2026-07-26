@@ -62,7 +62,21 @@ splits on `\n` and emits `new_line(str)` per line. Strips trailing `\r`
 before decoding — Zephyr UART output uses `\r\n` and the bare `\r` would
 cause blank lines in the display panes. Emits `connected()` immediately after
 the serial port opens (used by auto-reconnect to confirm reconnect succeeded),
-`error_occurred(str)` on `SerialException`. Never applies filters.
+`error_occurred(str)` on `SerialException` — and on any other exception too,
+prefixed with the type name. A bare `SerialException` handler let an `OSError`
+from `LogWriter` (full disk, unmounted volume) end the thread with no signal,
+leaving the UI showing a connection that had silently stopped reading. Never
+applies filters.
+
+`stop(timeout_ms=3000)` returns whether the thread finished in time. The wait
+is bounded because it runs on the GUI thread and `_make_serial()` can block in
+`open()` on a wedged USB device. A thread that misses the deadline is
+**abandoned, not terminated** — `QThread.terminate()` on a thread executing
+Python can leave the GIL held and wedge the process. Abandoning is safe:
+`_running` is already `False`, so once the blocking `open()` returns the loop
+body never executes, and the thread closes the port and exits without touching
+the log or emitting lines. Module-level `_orphans` holds a reference until
+`finished` fires, because destroying a running `QThread` crashes.
 
 Constructor takes an optional `options` dict: `databits` (5–8), `parity`
 (`'N'/'E'/'O'/'M'/'S'`), `stopbits` (`'1'/'1.5'/'2'`), `flow`
