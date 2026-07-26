@@ -3,6 +3,7 @@
 at the start of each connection session. Append-only. Flushes after every
 write so the log survives a crash."""
 
+import itertools
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -15,10 +16,26 @@ class LogWriter:
         self._path: Optional[Path] = None
 
     def open_session(self):
-        self._log_dir.mkdir(exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self._path = self._log_dir / f"session_{ts}.log"
-        self._file = open(self._path, "ab")
+        """Start a new session log, always in a file of its own.
+
+        The name carries a one-second-resolution timestamp, so reconnecting
+        inside the same second would otherwise land on a name that already
+        exists. Opening exclusively ("xb") and stepping through _2, _3, …
+        guarantees a fresh file: two sessions can never share one, and an
+        existing log can never be appended to or overwritten.
+        """
+        self.close()
+        self._log_dir.mkdir(parents=True, exist_ok=True)
+        stem = datetime.now().strftime("session_%Y%m%d_%H%M%S")
+        for attempt in itertools.count(1):
+            suffix = "" if attempt == 1 else f"_{attempt}"
+            path = self._log_dir / f"{stem}{suffix}.log"
+            try:
+                self._file = open(path, "xb")
+            except FileExistsError:
+                continue
+            self._path = path
+            return
 
     def write(self, data: bytes):
         if self._file:

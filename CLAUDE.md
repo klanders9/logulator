@@ -40,6 +40,15 @@ session. Append-only, flushes after every write. Exposes `current_path:
 Optional[Path]` for the status bar to read file size. Path is cleared on
 `close()`.
 
+`open_session()` opens the file **exclusively** (`"xb"`) and falls back to
+`session_..._2.log`, `_3.log`, … if the name is taken. The timestamp only has
+one-second resolution, so a disconnect/reconnect inside the same second
+produces the same name; the previous append-mode open silently continued the
+old session's file instead of starting a new one. Exclusive creation also
+means an unrelated pre-existing log can never be appended to or overwritten.
+`open_session()` closes any still-open file first, so re-opening cannot leak a
+handle.
+
 ### `app/serial_worker.py` — `SerialWorker(QThread)`
 Reads bytes from the serial port, appends raw bytes to `LogWriter`, then
 splits on `\n` and emits `new_line(str)` per line. Strips trailing `\r`
@@ -761,11 +770,6 @@ Implementation complete and tested on macOS. All core features working:
   jump the pane's scroll position; "Show minimap" checkbox + Both/Raw/Filtered
   apply-to selector in the settings sidebar, persisted via `AppSettings`;
   available in both `MainWindow` and `FileViewer`
-
-**Under investigation:**
-- Possible bug where disconnecting and reconnecting reuses the same log
-  file rather than opening a new one. Not yet reproduced reliably — tabled
-  until confirmed.
 
 ## Known Constraints
 - Serial port device paths: /dev/tty.usbmodem* or /dev/tty.usbserial* on
