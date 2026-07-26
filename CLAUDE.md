@@ -16,8 +16,8 @@ Raw log collection and filtered display are strictly separated:
   directions of the conversation. TX never modifies or filters RX bytes.
 
 ## Tech Stack
-- Python 3.11+ (note: the existing .venv uses Python 3.9 — avoid `X | Y`
-  union syntax in type hints; use `Optional[X]` from typing instead)
+- Python 3.9+ (matches `requires-python` in `pyproject.toml` and the .venv —
+  avoid `X | Y` union syntax in type hints; use `Optional[X]` from typing instead)
 - PySide6 (Qt6 bindings) for GUI — Qt Widgets, not QML
 - pyserial for serial port access
 - No other dependencies without asking first
@@ -769,8 +769,8 @@ Implementation complete and tested on macOS. All core features working:
 - `LogPane` is defined in `app/ui/log_pane.py` (not `main_window.py`) to
   avoid circular imports between `MainWindow` and `FileViewer`.
 - `filter_engine.py` is stateless and must remain untouched.
-- The .venv is Python 3.9 despite the 3.11+ requirement. Avoid new-style
-  union type hints (`X | Y`) until the venv is upgraded.
+- The project targets Python 3.9 (`requires-python = ">=3.9"`, and the .venv is
+  3.9). Avoid new-style union type hints (`X | Y`) until that floor is raised.
 - File viewer Follow mode reads new content in binary mode and tracks a byte
   offset (`_follow_pos`). `QFileSystemWatcher` may drop the watch path after
   the first change event on some platforms — `_on_file_changed` re-adds it.

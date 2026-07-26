@@ -25,7 +25,7 @@ A cross-platform desktop GUI for monitoring and filtering serial log output.
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.9+
 - PySide6 6.7+
 - pyserial 3.5+
 
