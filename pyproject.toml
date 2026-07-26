@@ -12,12 +12,22 @@ dependencies = [
     "pyserial>=3.5",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-qt>=4.2",
+]
+
 [project.scripts]
 logulator = "main:main"
 
 [tool.setuptools]
 packages = ["app", "app.ui"]
 py-modules = ["main"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
 
 [tool.setuptools.data-files]
 "share/applications" = ["data/logulator.desktop"]

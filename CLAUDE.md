@@ -651,6 +651,24 @@ recognized by syntax-mode colorization:
 
 **Generic / unstructured** (level mode uses keyword scan; syntax mode renders plain grey).
 
+## Testing
+
+`pytest` + `pytest-qt`, declared as the `dev` optional-dependency group in
+`pyproject.toml`. Install with `.venv/bin/pip install -e ".[dev]"`, run with
+`.venv/bin/python -m pytest`.
+
+- `tests/conftest.py` sets `QT_QPA_PLATFORM=offscreen` **before** PySide6 is
+  imported, and redirects `QSettings` to a temporary INI tree for the whole
+  session. Without that redirect, tests would read and overwrite the
+  developer's real logulator preferences. The `settings` fixture hands out a
+  cleared `AppSettings` backed by that store.
+- Qt widget tests take pytest-qt's `qapp` / `qtbot` fixtures.
+- `pythonpath = ["."]` in `[tool.pytest.ini_options]` makes `app` importable
+  without installing the package.
+- Known bugs that are captured but not yet fixed are marked
+  `@pytest.mark.xfail(strict=True)` with the reason. Strict mode means the
+  suite fails once the bug is fixed, which is the prompt to delete the marker.
+
 ## Current Status
 Implementation complete and tested on macOS. All core features working:
 - Serial connect/disconnect with per-session timestamped log files
