@@ -2,7 +2,6 @@
 """Tests for the file viewer's tail/follow mode."""
 
 import pytest
-from PySide6.QtCore import QSettings
 
 from app.settings import AppSettings
 from app.ui.file_viewer import FileViewer
@@ -15,8 +14,8 @@ LINES = [
 
 
 @pytest.fixture(autouse=True)
-def _clean_settings(_isolate_qsettings):
-    QSettings("logulator", "logulator").clear()
+def _clean_settings(clear_settings):
+    clear_settings()
 
 
 @pytest.fixture

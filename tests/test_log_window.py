@@ -7,7 +7,6 @@ to the mixin cannot silently break one window while the other still works.
 """
 
 import pytest
-from PySide6.QtCore import QSettings
 
 from app.main_window import MainWindow
 from app.ui.file_viewer import FileViewer
@@ -23,8 +22,8 @@ ZEPHYR_LINES = [
 
 
 @pytest.fixture(autouse=True)
-def _clean_settings(_isolate_qsettings):
-    QSettings("logulator", "logulator").clear()
+def _clean_settings(clear_settings):
+    clear_settings()
 
 
 @pytest.fixture
@@ -83,10 +82,9 @@ class TestSharedSetup:
     def test_filtered_box_starts_hidden(self, win):
         assert not win._filtered_box.isVisible()
 
-    def test_main_window_honours_the_persisted_buffer_cap(self, qtbot):
-        settings = QSettings("logulator", "logulator")
-        settings.setValue("buffer/cap", 5_000)
-        settings.sync()
+    def test_main_window_honours_the_persisted_buffer_cap(self, qtbot, settings_store):
+        settings_store.setValue("buffer/cap", 5_000)
+        settings_store.sync()
         w = MainWindow()
         qtbot.addWidget(w)
         assert w._raw_pane._cap == 5_000

@@ -2,7 +2,6 @@
 """Tests for the semantic color layer and live theme switching."""
 
 import pytest
-from PySide6.QtCore import QSettings
 
 from app import theme
 from app.main_window import MainWindow
@@ -15,8 +14,8 @@ _KEYS = {
 
 
 @pytest.fixture(autouse=True)
-def _clean_settings(_isolate_qsettings):
-    QSettings("logulator", "logulator").clear()
+def _clean_settings(clear_settings):
+    clear_settings()
 
 
 @pytest.fixture(autouse=True)
