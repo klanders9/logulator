@@ -6,6 +6,7 @@ A cross-platform desktop GUI for monitoring and filtering serial log output.
 
 - Live serial port monitoring with configurable baud rate
 - All bytes written to a timestamped log file — unmodified, regardless of active filters
+- Session logs go to `~/logs` by default; change the directory under **⚙ Settings → Logging**
 - Filter display by substring, regex, log level (`<dbg>` `<inf>` `<wrn>` `<err>`), or module name
 - Include and exclude rules, combinable with AND/OR logic
 - Configurable rolling display buffer (default 100,000 lines; log file retains everything)

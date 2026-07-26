@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
     QComboBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -149,6 +150,25 @@ class SettingsSidebar(QWidget):
         minimap_apply_row.addWidget(self._minimap_apply_combo, stretch=1)
         layout.addLayout(minimap_apply_row)
 
+        layout.addWidget(self._section_label("Logging"))
+        log_row = QHBoxLayout()
+        log_row.setSpacing(4)
+        self._log_dir_label = QLabel()
+        self._log_dir_label.setWordWrap(True)
+        self._log_dir_label.setStyleSheet("color: #aaaaaa; font-size: 11px;")
+        self._refresh_log_dir_label()
+        log_row.addWidget(self._log_dir_label, stretch=1)
+        log_dir_btn = QPushButton("…")
+        log_dir_btn.setFixedWidth(28)
+        log_dir_btn.setToolTip("Choose the session log directory")
+        log_dir_btn.clicked.connect(self._on_pick_log_dir)
+        log_row.addWidget(log_dir_btn)
+        layout.addLayout(log_row)
+        log_hint = QLabel("Session logs are written here. Applies on the next connect.")
+        log_hint.setWordWrap(True)
+        log_hint.setStyleSheet("color: #888888; font-size: 10px;")
+        layout.addWidget(log_hint)
+
         layout.addWidget(self._section_label("Buffer"))
         cap_row = QHBoxLayout()
         cap_row.addWidget(QLabel("Line cap:"), stretch=1)
@@ -244,6 +264,19 @@ class SettingsSidebar(QWidget):
     def _on_minimap_apply_changed(self, value: str) -> None:
         self._s.set_minimap_apply_to(value)
         self.settings_changed.emit()
+
+    def _refresh_log_dir_label(self) -> None:
+        path = self._s.log_dir()
+        self._log_dir_label.setText(path)
+        self._log_dir_label.setToolTip(path)
+
+    def _on_pick_log_dir(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(
+            self, "Session log directory", self._s.log_dir()
+        )
+        if chosen:
+            self._s.set_log_dir(chosen)
+            self._refresh_log_dir_label()
 
     def _on_buffer_cap_changed(self, value: int) -> None:
         self._s.set_buffer_cap(value)

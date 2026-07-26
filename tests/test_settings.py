@@ -134,3 +134,27 @@ class TestColors:
         assert settings.tx_color() == "#8be9fd"
         settings.set_tx_color("#010203")
         assert settings.tx_color() == "#010203"
+
+
+class TestLogDir:
+    def test_defaults_to_home_logs(self, settings):
+        from pathlib import Path
+
+        assert settings.log_dir() == str(Path.home() / "logs")
+
+    def test_roundtrip(self, settings, tmp_path):
+        settings.set_log_dir(str(tmp_path / "elsewhere"))
+        assert settings.log_dir() == str(tmp_path / "elsewhere")
+
+    def test_empty_value_restores_the_default(self, settings, tmp_path):
+        from pathlib import Path
+
+        settings.set_log_dir(str(tmp_path))
+        settings.set_log_dir("")
+        assert settings.log_dir() == str(Path.home() / "logs")
+
+    def test_whitespace_is_treated_as_unset(self, settings):
+        from pathlib import Path
+
+        settings.set_log_dir("   ")
+        assert settings.log_dir() == str(Path.home() / "logs")

@@ -117,3 +117,38 @@ class TestWriting:
         payload = b"\x00\xff partial line without newline \r\n\x1b[31mANSI\x1b[0m"
         writer.write(payload)
         assert writer.current_path.read_bytes() == payload
+
+
+class TestLogDirectory:
+    def test_expands_a_tilde_path(self, tmp_path):
+        from pathlib import Path
+
+        w = LogWriter("~/some-logs")
+        assert w._log_dir == Path.home() / "some-logs"
+
+    def test_set_log_dir_applies_to_the_next_session(self, writer, tmp_path):
+        writer.open_session()
+        assert writer.current_path.parent == tmp_path / "logs"
+        writer.close()
+
+        writer.set_log_dir(str(tmp_path / "other"))
+        writer.open_session()
+        assert writer.current_path.parent == tmp_path / "other"
+
+    def test_creates_nested_directories(self, tmp_path):
+        w = LogWriter(str(tmp_path / "a" / "b" / "c"))
+        w.open_session()
+        assert (tmp_path / "a" / "b" / "c").is_dir()
+        w.close()
+
+    def test_unwritable_directory_raises_oserror(self, tmp_path):
+        """MainWindow relies on this to refuse the connection with a dialog."""
+        blocked = tmp_path / "blocked"
+        blocked.mkdir()
+        blocked.chmod(0o500)
+        w = LogWriter(str(blocked / "logs"))
+        try:
+            with pytest.raises(OSError):
+                w.open_session()
+        finally:
+            blocked.chmod(0o700)

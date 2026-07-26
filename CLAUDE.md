@@ -40,6 +40,13 @@ session. Append-only, flushes after every write. Exposes `current_path:
 Optional[Path]` for the status bar to read file size. Path is cleared on
 `close()`.
 
+The destination comes from `AppSettings.log_dir()` (default `~/logs`), which
+`MainWindow._on_connect` pushes in via `set_log_dir()` before each session, so
+a change in the sidebar applies to the next connect. Paths are `expanduser()`d.
+If `open_session()` raises `OSError` the connection is refused with a dialog —
+an unlogged session is worse than no session, since the log file is the source
+of truth.
+
 `open_session()` opens the file **exclusively** (`"xb"`) and falls back to
 `session_..._2.log`, `_3.log`, … if the name is taken. The timestamp only has
 one-second resolution, so a disconnect/reconnect inside the same second
@@ -227,11 +234,17 @@ Wraps `QSettings` (org: `logulator`, app: `logulator`) with typed
 getters/setters and hardcoded defaults. Covers: window geometry, splitter
 state, sidebar open/closed, colorization settings (enabled, mode, apply-to,
 per-level colors, per-syntax-field colors), buffer cap, minimap
-enabled/apply-to, filter state, recent files, auto-reconnect, and app theme.
-All future persistent settings go through this class.
+enabled/apply-to, log directory, filter state, recent files, auto-reconnect,
+and app theme. All future persistent settings go through this class.
 
 Buffer cap: `buffer_cap() -> int` / `set_buffer_cap(val: int)`. Default
 100,000, clamped to [1,000, 500,000] on read and write.
+
+Logging: `log_dir() -> str` / `set_log_dir(val: str)` — stored under
+`logging/dir`. Defaults to `~/logs`; an empty or whitespace value restores
+that default. Absolute by construction, so it no longer depends on the process
+working directory — the old relative `"logs"` meant a terminal launch and a
+desktop-launcher launch wrote to different places.
 
 Minimap: `minimap_enabled() -> bool` / `set_minimap_enabled(val: bool)` —
 stored under `display/minimap_enabled`, default `False`. `minimap_apply_to()
@@ -341,6 +354,10 @@ Fixed-width (280 px) collapsible panel shown on the right side of
   `settings_changed()`, same as the colorization controls; `MainWindow` and
   `FileViewer` both call `_apply_minimap_settings()` from their
   `_on_settings_changed()` handler to show/hide and backfill the minimap(s).
+- **Logging:** current session-log directory plus a `…` button opening a
+  directory picker. Writes straight to `AppSettings.log_dir()` and emits no
+  signal — `MainWindow._on_connect` re-reads the setting each time, so the
+  change lands on the next connect without disturbing the running session.
 - **Buffer:** `QSpinBox` for the display line cap (range 1,000–500,000, step
   1,000, default 100,000). Emits `buffer_cap_changed(int)` — a separate
   signal so changes don't trigger a full pane rebuild.

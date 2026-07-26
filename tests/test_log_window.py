@@ -253,3 +253,60 @@ class TestFileViewerLoading:
     def test_status_bar_reports_the_file(self, viewer, log_file):
         assert log_file.name in viewer._status_label.text()
         assert "4 lines" in viewer._status_label.text()
+
+
+class TestConnectRefusesWithoutALog:
+    """The log file is the source of truth, so an unloggable session is refused."""
+
+    def test_unwritable_log_dir_aborts_the_connection(self, win, tmp_path, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+
+        blocked = tmp_path / "blocked"
+        blocked.mkdir()
+        blocked.chmod(0o500)
+        win._settings.set_log_dir(str(blocked / "logs"))
+
+        shown = []
+        monkeypatch.setattr(
+            QMessageBox, "critical", lambda *a, **k: shown.append(a[2])
+        )
+        try:
+            win._on_connect("/dev/nonexistent", 115200)
+        finally:
+            blocked.chmod(0o700)
+
+        assert shown, "user must be told the session log could not be opened"
+        assert win._worker is None, "no serial worker may start without a log"
+        assert win._connect_time is None
+
+    def test_log_dir_setting_is_picked_up_at_connect(self, win, tmp_path, monkeypatch):
+        """A directory chosen mid-session applies to the next connect."""
+        from app import main_window as mw
+
+        target = tmp_path / "chosen"
+        win._settings.set_log_dir(str(target))
+        monkeypatch.setattr(mw, "SerialWorker", lambda *a, **k: _StubWorker())
+
+        win._on_connect("/dev/nonexistent", 115200)
+        try:
+            assert win._log_writer.current_path.parent == target
+        finally:
+            win._on_disconnect(prompt_clear=False)
+
+
+class _StubWorker:
+    """Stands in for SerialWorker so no real port is touched."""
+
+    class _Sig:
+        def connect(self, *_a, **_k):
+            pass
+
+    new_line = _Sig()
+    error_occurred = _Sig()
+    connected = _Sig()
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass

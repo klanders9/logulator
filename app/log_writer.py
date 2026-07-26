@@ -11,9 +11,13 @@ from typing import Optional
 
 class LogWriter:
     def __init__(self, log_dir: str = "logs"):
-        self._log_dir = Path(log_dir)
+        self._log_dir = Path(log_dir).expanduser()
         self._file = None
         self._path: Optional[Path] = None
+
+    def set_log_dir(self, log_dir: str) -> None:
+        """Change the destination directory. Takes effect on the next session."""
+        self._log_dir = Path(log_dir).expanduser()
 
     def open_session(self):
         """Start a new session log, always in a file of its own.

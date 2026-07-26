@@ -2,6 +2,7 @@
 """QSettings-backed persistent settings for logulator."""
 
 import json
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QByteArray, QSettings
@@ -119,6 +120,25 @@ class AppSettings:
     def set_buffer_cap(self, val: int) -> None:
         val = max(self._BUFFER_MIN, min(self._BUFFER_MAX, val))
         self._qs.setValue("buffer/cap", val)
+
+    # --- Logging ---
+
+    def log_dir(self) -> str:
+        """Directory that session logs are written to.
+
+        Defaults to ~/logs, which resolves the same way however the app was
+        launched. The previous "logs" was relative to the process working
+        directory, so a terminal launch and a desktop-launcher launch wrote to
+        different places. On Windows, Path.home() is C:\\Users\\<username>.
+        """
+        v = self._qs.value("logging/dir", "")
+        if isinstance(v, str) and v.strip():
+            return v
+        return str(Path.home() / "logs")
+
+    def set_log_dir(self, val: str) -> None:
+        """Set the session log directory. An empty value restores the default."""
+        self._qs.setValue("logging/dir", str(val))
 
     # --- Filter ---
 

@@ -220,7 +220,23 @@ class MainWindow(LogWindowMixin, QMainWindow):
         self._reconnect_port = port
         self._reconnect_baud = baud
         self._reconnect_options = self._serial_options()
-        self._log_writer.open_session()
+
+        # Pick up any log-directory change made since the last session, and
+        # refuse to connect if we cannot record the session: the log file is
+        # the source of truth, so a silent unlogged session is worse than none.
+        log_dir = self._settings.log_dir()
+        self._log_writer.set_log_dir(log_dir)
+        try:
+            self._log_writer.open_session()
+        except OSError as exc:
+            QMessageBox.critical(
+                self,
+                "Cannot open log file",
+                f"Could not start a session log in:\n{log_dir}\n\n{exc}\n\n"
+                "Pick a different log directory under Settings → Logging.",
+            )
+            return
+
         self._line_count = 0
         self._connect_time = datetime.now()
         path = self._log_writer.current_path
