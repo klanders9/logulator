@@ -231,3 +231,70 @@ class TestCaseSensitivity:
         rule = {"type": "substring", "value": "boom", "mode": "include",
                 "ignore_case": False}
         assert _chip_label_text(rule) == "+ sub: boom"
+
+
+class TestRegexValidation:
+    def test_invalid_pattern_is_rejected(self, bar):
+        bar._type_combo.setCurrentText("regex")
+        bar._input.setText("(unclosed")
+        bar._add_rule()
+        assert bar.get_rules() == []
+
+    def test_invalid_pattern_keeps_the_text_for_editing(self, bar):
+        bar._type_combo.setCurrentText("regex")
+        bar._input.setText("(unclosed")
+        bar._add_rule()
+        assert bar._input.text() == "(unclosed"
+
+    def test_invalid_pattern_explains_itself(self, bar):
+        bar._type_combo.setCurrentText("regex")
+        bar._input.setText("(unclosed")
+        bar._add_rule()
+        assert "Invalid regular expression" in bar._input.toolTip()
+        assert bar._input.styleSheet() != ""
+
+    def test_invalid_pattern_emits_nothing(self, bar):
+        emitted = []
+        bar.filters_changed.connect(lambda *a: emitted.append(a))
+        bar._type_combo.setCurrentText("regex")
+        bar._input.setText("(unclosed")
+        bar._add_rule()
+        assert emitted == []
+
+    def test_editing_clears_the_error_state(self, bar):
+        bar._type_combo.setCurrentText("regex")
+        bar._input.setText("(unclosed")
+        bar._add_rule()
+        bar._input.textEdited.emit("(unclosed)")
+        assert bar._input.styleSheet() == ""
+        assert bar._input.toolTip() == ""
+
+    def test_valid_pattern_is_accepted(self, bar):
+        bar._type_combo.setCurrentText("regex")
+        bar._input.setText(r"err\w+")
+        bar._add_rule()
+        assert bar.get_rules()[0]["value"] == r"err\w+"
+
+    def test_fixing_the_pattern_then_adding_works(self, bar):
+        bar._type_combo.setCurrentText("regex")
+        bar._input.setText("(unclosed")
+        bar._add_rule()
+        bar._input.setText("(closed)")
+        bar._add_rule()
+        assert [r["value"] for r in bar.get_rules()] == ["(closed)"]
+        assert bar._input.styleSheet() == ""
+
+    def test_other_rule_types_are_not_regex_validated(self, bar):
+        """"(unclosed" is a perfectly good substring."""
+        bar._type_combo.setCurrentText("substring")
+        bar._input.setText("(unclosed")
+        bar._add_rule()
+        assert bar.get_rules()[0]["value"] == "(unclosed"
+
+    def test_invalid_exclude_pattern_is_also_rejected(self, bar):
+        """The dangerous case: a broken exclude used to silently exclude nothing."""
+        bar._type_combo.setCurrentText("regex")
+        bar._inc_exc_combo.setCurrentText("exclude")
+        bar._input.setText("[")
+        bar._add_rule()
+        assert bar.get_rules() == []

@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Kevin Landers. SPDX-License-Identifier: MIT
 """Compact filter bar: collapsible input row + horizontal rule chip strip."""
 
+import re
 from typing import Optional
 
 from PySide6.QtCore import QEvent, Qt, Signal
@@ -36,6 +37,8 @@ _CHIP_BTN_STYLE = (
 )
 
 _TYPE_ABBREV = {"substring": "sub", "regex": "rgx", "level": "lvl", "module": "mod"}
+
+_INPUT_ERROR_STYLE = "QLineEdit { background: #3a0000; }"
 
 
 def _chip_label_text(rule: dict) -> str:
@@ -111,6 +114,7 @@ class FilterBar(QWidget):
         self._input = QLineEdit()
         self._input.setPlaceholderText("Filter value…")
         self._input.returnPressed.connect(self._add_rule)
+        self._input.textEdited.connect(lambda _text: self._clear_input_error())
         self._input.installEventFilter(self)
 
         self._type_combo = QComboBox()
@@ -222,8 +226,20 @@ class FilterBar(QWidget):
         value = self._input.text().strip()
         if not value:
             return
+        rule_type = self._type_combo.currentText()
+        if rule_type == "regex":
+            # filter_engine returns False for an unparseable pattern, so an
+            # unvalidated include silently emptied the filtered pane and an
+            # unvalidated exclude silently stopped excluding. Both looked like
+            # the filter was broken rather than the pattern.
+            try:
+                re.compile(value)
+            except re.error as exc:
+                self._show_input_error(f"Invalid regular expression: {exc}")
+                return
+        self._clear_input_error()
         rule = {
-            "type": self._type_combo.currentText(),
+            "type": rule_type,
             "value": value,
             "mode": self._inc_exc_combo.currentText(),
             "ignore_case": not self._case_btn.isChecked(),
@@ -231,6 +247,14 @@ class FilterBar(QWidget):
         self._rules.append(rule)
         self._input.clear()
         self._commit()
+
+    def _show_input_error(self, message: str) -> None:
+        self._input.setStyleSheet(_INPUT_ERROR_STYLE)
+        self._input.setToolTip(message)
+
+    def _clear_input_error(self) -> None:
+        self._input.setStyleSheet("")
+        self._input.setToolTip("")
 
     def _remove_rule(self, index: int):
         del self._rules[index]

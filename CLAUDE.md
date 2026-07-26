@@ -107,7 +107,8 @@ case-sensitive identifiers).
 
 Rule types:
 - `substring` — plain `in` check
-- `regex` — `re.search`; silently returns False on bad pattern
+- `regex` — `re.search`; returns False on an unparseable pattern (the engine
+  stays total; `FilterBar` validates before a rule ever gets this far)
 - `level` — compares `log_format.detect_level(line)`, so an explicit
   `<dbg>/<inf>/<wrn>/<err>` tag **or** a keyword-detected severity matches
 - `module` — prefix-matches the module field (after the level tag)
@@ -219,6 +220,11 @@ directly above the content they affect.
   toggle (checked by default, so rules stay case-sensitive unless asked
   otherwise), AND/OR mode toggle, Add button. Hidden by default; toggled by a
   toolbar action. Escape dismisses it and emits `input_bar_closed`.
+  Regex values are `re.compile`d before the rule is accepted; a bad pattern
+  reddens the input, puts the `re.error` in its tooltip and adds nothing.
+  Without that check an invalid include silently emptied the filtered pane and
+  an invalid exclude silently excluded nothing — both read as a broken filter
+  rather than a broken pattern.
 - **Chip strip** (`_chip_scroll`): horizontal scrollable row of `_RuleChip`
   widgets, one per active rule. Each chip shows `+ sub: value` or `− lvl: err`
   with a `×` remove button. Hidden completely when no rules are active.
