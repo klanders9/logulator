@@ -133,3 +133,68 @@ class TestPaneWithHeader:
         content = layout.itemAt(1).widget()
         assert minimap in content.findChildren(Minimap)
         assert pane in content.findChildren(type(pane))
+
+
+class TestReplaceLines:
+    def test_replaces_all_content(self, pane, plain):
+        append(pane, plain, "old one", "old two")
+        pane.replace_lines([[("new one", plain)], [("new two", plain)]])
+        assert block_texts(pane) == ["new one", "new two"]
+
+    def test_accepts_a_generator_reading_the_current_document(self, pane, plain):
+        """The rebuild path streams from the live document into the new one,
+        so nothing has to be buffered in between."""
+        append(pane, plain, "a", "b", "c")
+        pane.replace_lines(
+            [(text.upper(), plain)] for text in block_texts(pane)
+        )
+        assert block_texts(pane) == ["A", "B", "C"]
+
+    def test_multi_segment_lines_stay_one_block(self, pane, plain):
+        pane.replace_lines([[("[ts]", plain), (" msg", plain)]])
+        assert block_texts(pane) == ["[ts] msg"]
+
+    def test_empty_input_empties_the_pane(self, pane, plain):
+        append(pane, plain, "a", "b")
+        pane.replace_lines([])
+        assert doc_line_count(pane) == 0
+
+    def test_cap_is_enforced(self, pane, plain):
+        pane.set_cap(2)
+        pane.replace_lines([[(str(i), plain)] for i in range(6)])
+        assert block_texts(pane) == ["4", "5"]
+
+    def test_cap_survives_the_swap(self, pane, plain):
+        pane.set_cap(3)
+        pane.replace_lines([[("a", plain)]])
+        append(pane, plain, "b", "c", "d")
+        assert block_texts(pane) == ["b", "c", "d"]
+
+    def test_appending_still_works_after_a_replace(self, pane, plain):
+        pane.replace_lines([[("first", plain)]])
+        append(pane, plain, "second")
+        assert block_texts(pane) == ["first", "second"]
+
+    def test_font_is_preserved_across_the_swap(self, pane, plain):
+        f = pane.font()
+        f.setPointSize(19)
+        pane.setFont(f)
+        pane.replace_lines([[("x", plain)]])
+        assert pane.document().defaultFont().pointSize() == 19
+
+    def test_read_only_survives_the_swap(self, pane, plain):
+        pane.replace_lines([[("x", plain)]])
+        assert pane.isReadOnly()
+
+
+class TestTrimBatching:
+    def test_lowering_the_cap_far_is_not_quadratic(self, pane, plain):
+        import time
+
+        pane.set_cap(200_000)
+        append(pane, plain, *[str(i) for i in range(60_000)])
+        start = time.monotonic()
+        pane.set_cap(1_000)
+        elapsed = time.monotonic() - start
+        assert pane.document().blockCount() == 1_000
+        assert elapsed < 1.0, f"trim took {elapsed:.2f}s"

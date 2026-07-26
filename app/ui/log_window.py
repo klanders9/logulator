@@ -174,11 +174,13 @@ class LogWindowMixin:
     # ------------------------------------------------------------------
 
     def _rebuild_raw_pane(self) -> None:
-        lines = list(iter_block_texts(self._raw_pane.document()))
+        # The generator reads the pane's current document while replace_lines
+        # fills a new one, so nothing has to be buffered in between.
         self._raw_pane.setUpdatesEnabled(False)
-        self._raw_pane.clear()
-        for line in lines:
-            self._raw_pane.append_line(self._get_segments(line, "raw"), scroll=False)
+        self._raw_pane.replace_lines(
+            self._get_segments(line, "raw")
+            for line in iter_block_texts(self._raw_pane.document())
+        )
         self._raw_pane.setUpdatesEnabled(True)
         sb = self._raw_pane.verticalScrollBar()
         sb.setValue(sb.maximum())
@@ -187,12 +189,11 @@ class LogWindowMixin:
 
     def _rebuild_filtered_pane(self) -> None:
         self._filtered_pane.setUpdatesEnabled(False)
-        self._filtered_pane.clear()
-        for text in iter_block_texts(self._raw_pane.document()):
-            if filter_engine.match(text, self._rules, self._filter_mode):
-                self._filtered_pane.append_line(
-                    self._get_segments(text, "filtered"), scroll=False
-                )
+        self._filtered_pane.replace_lines(
+            self._get_segments(text, "filtered")
+            for text in iter_block_texts(self._raw_pane.document())
+            if filter_engine.match(text, self._rules, self._filter_mode)
+        )
         self._filtered_pane.setUpdatesEnabled(True)
         sb = self._filtered_pane.verticalScrollBar()
         sb.setValue(sb.maximum())

@@ -145,6 +145,15 @@ here to avoid circular imports. Key contents:
     already at the bottom before the insert.
   - `set_cap(n)` updates `self._cap` and immediately trims from the top.
     Default `_DEFAULT_CAP = 100_000`.
+  - `_trim_to_cap(doc)` removes all excess blocks in **one** extended
+    selection. Removing them one per loop iteration made lowering the cap
+    O(excess) edits — 0.71 s to go from 200,000 lines to 1,000, now 0.21 s.
+  - `replace_lines(segmented_lines)` rebuilds the pane by filling a fresh
+    `QTextDocument` with a single cursor and swapping it in, instead of
+    clearing and calling `append_line()` per line. Skips the per-line
+    scrollbar and cap bookkeeping, and accepts a generator reading the pane's
+    current document, so a rebuild never materialises every line as a Python
+    list. Rebuilding 50,000 lines went from 5.7 s to 1.5 s.
   - `mouseDoubleClickEvent` emits `line_double_clicked(str)` with the block
     text at the click position.
   - `dragEnterEvent` / `dropEvent` accept local file URL drops and emit
@@ -617,8 +626,9 @@ connected to `MainWindow.open_file()`.
   Hidden when no rules are active; shown automatically when the first rule
   is added. Initial split is 60/40 (raw/filtered) on first show (or
   restored from saved state); user can drag after that.
-- When filters change, `_rebuild_filtered_pane()` clears the filtered pane
-  and re-walks `_raw_pane.document()` blocks to rebuild from scratch.
+- When filters change, `_rebuild_filtered_pane()` re-walks
+  `_raw_pane.document()` blocks and feeds the matching ones to
+  `LogPane.replace_lines()` as a generator.
 - When colorization settings change, `_on_settings_changed()` calls
   `_rebuild_raw_pane()` and (if visible) `_rebuild_filtered_pane()` to
   recolor all displayed lines. Both rebuilds use `setUpdatesEnabled(False)`

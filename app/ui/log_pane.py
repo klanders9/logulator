@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QMimeData, Signal
-from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor, QTextDocument
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QTextEdit, QVBoxLayout, QWidget
 
 _DEFAULT_CAP = 100_000
@@ -37,12 +37,26 @@ class LogPane(QTextEdit):
 
     def set_cap(self, new_cap: int) -> None:
         self._cap = new_cap
-        doc = self.document()
-        while doc.blockCount() > self._cap:
-            trim = QTextCursor(doc)
-            trim.movePosition(QTextCursor.MoveOperation.Start)
-            trim.movePosition(QTextCursor.MoveOperation.NextBlock, QTextCursor.MoveMode.KeepAnchor)
-            trim.removeSelectedText()
+        self._trim_to_cap(self.document())
+
+    def _trim_to_cap(self, doc) -> None:
+        """Drop the oldest blocks in one edit.
+
+        Removing a block per iteration made lowering the cap O(excess) cursor
+        edits — measurably slow at the 500,000 maximum. One extended selection
+        does the same work in a single removal.
+        """
+        excess = doc.blockCount() - self._cap
+        if excess <= 0:
+            return
+        trim = QTextCursor(doc)
+        trim.movePosition(QTextCursor.MoveOperation.Start)
+        trim.movePosition(
+            QTextCursor.MoveOperation.NextBlock,
+            QTextCursor.MoveMode.KeepAnchor,
+            excess,
+        )
+        trim.removeSelectedText()
 
     def mouseDoubleClickEvent(self, event) -> None:
         cursor = self.cursorForPosition(event.pos())
@@ -93,14 +107,32 @@ class LogPane(QTextEdit):
         for text, fmt in segments:
             cursor.insertText(text, fmt)
 
-        while doc.blockCount() > self._cap:
-            trim = QTextCursor(doc)
-            trim.movePosition(QTextCursor.MoveOperation.Start)
-            trim.movePosition(QTextCursor.MoveOperation.NextBlock, QTextCursor.MoveMode.KeepAnchor)
-            trim.removeSelectedText()
+        self._trim_to_cap(doc)
 
         if scroll and was_at_bottom:
             sb.setValue(sb.maximum())
+
+    def replace_lines(self, segmented_lines) -> None:
+        """Rebuild the whole pane from an iterable of segment lists.
+
+        Builds a fresh document with one cursor and swaps it in, rather than
+        clearing and calling append_line() per line. That skips the per-line
+        scrollbar and cap bookkeeping, and lets the caller pass a generator
+        reading the current document — no need to materialise every line as a
+        Python list first, which mattered at the 500,000-line cap.
+        """
+        new_doc = QTextDocument(self)
+        new_doc.setDefaultFont(self.font())
+        cursor = QTextCursor(new_doc)
+        first = True
+        for segments in segmented_lines:
+            if not first:
+                cursor.insertBlock()
+            for text, fmt in segments:
+                cursor.insertText(text, fmt)
+            first = False
+        self._trim_to_cap(new_doc)
+        self.setDocument(new_doc)
 
 
 def make_pane(font: QFont, cap: Optional[int] = None) -> LogPane:
