@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.settings import AppSettings
+from app.theme import active_colors
 
 _APPLY_LABELS = ["All panes", "Raw log only", "Filtered log only", "None"]
 _APPLY_VALUES = ["all", "raw", "filtered", "none"]
@@ -155,7 +156,9 @@ class SettingsSidebar(QWidget):
         log_row.setSpacing(4)
         self._log_dir_label = QLabel()
         self._log_dir_label.setWordWrap(True)
-        self._log_dir_label.setStyleSheet("color: #aaaaaa; font-size: 11px;")
+        self._log_dir_label.setStyleSheet(
+            "color: %s; font-size: 11px;" % active_colors()["header_text"]
+        )
         self._refresh_log_dir_label()
         log_row.addWidget(self._log_dir_label, stretch=1)
         log_dir_btn = QPushButton("…")
@@ -166,7 +169,9 @@ class SettingsSidebar(QWidget):
         layout.addLayout(log_row)
         log_hint = QLabel("Session logs are written here. Applies on the next connect.")
         log_hint.setWordWrap(True)
-        log_hint.setStyleSheet("color: #888888; font-size: 10px;")
+        log_hint.setStyleSheet(
+            "color: %s; font-size: 10px;" % active_colors()["muted_text"]
+        )
         layout.addWidget(log_hint)
 
         layout.addWidget(self._section_label("Buffer"))
@@ -201,13 +206,17 @@ class SettingsSidebar(QWidget):
         lbl = QLabel(text)
         lbl.setStyleSheet(
             "font-weight: bold; font-size: 13px;"
-            "padding-bottom: 2px; border-bottom: 1px solid #555;"
+            "padding-bottom: 2px; border-bottom: 1px solid %s;"
+            % active_colors()["border"]
         )
         return lbl
 
     def _subsection_label(self, text: str) -> QLabel:
         lbl = QLabel(text)
-        lbl.setStyleSheet("font-weight: bold; color: #aaaaaa; margin-top: 6px;")
+        lbl.setStyleSheet(
+            "font-weight: bold; color: %s; margin-top: 6px;"
+            % active_colors()["header_text"]
+        )
         return lbl
 
     def _color_row(
@@ -222,7 +231,7 @@ class SettingsSidebar(QWidget):
 
         swatch = QLabel()
         swatch.setFixedSize(20, 20)
-        swatch.setStyleSheet(f"background-color: {getter()}; border: 1px solid #666;")
+        swatch.setStyleSheet(f"background-color: {getter()}; border: 1px solid {active_colors()['border']};")
         row.addWidget(swatch)
 
         pick_btn = QPushButton("…")
@@ -233,7 +242,7 @@ class SettingsSidebar(QWidget):
             if color.isValid():
                 hex_color = color.name()
                 _setter(hex_color)
-                _swatch.setStyleSheet(f"background-color: {hex_color}; border: 1px solid #666;")
+                _swatch.setStyleSheet(f"background-color: {hex_color}; border: 1px solid {active_colors()['border']};")
                 self.settings_changed.emit()
 
         pick_btn.clicked.connect(pick)

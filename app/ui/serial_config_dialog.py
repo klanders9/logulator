@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.settings import AppSettings
+from app.theme import active_colors
 
 _DATABITS = ["5", "6", "7", "8"]
 
@@ -102,7 +103,7 @@ class SerialConfigDialog(QDialog):
         layout.addWidget(self._rts_cb)
 
         hint = QLabel("Applied on the next connect.")
-        hint.setStyleSheet("color: #888888;")
+        hint.setStyleSheet("color: %s;" % active_colors()["muted_text"])
         layout.addWidget(hint)
 
         buttons = QDialogButtonBox(

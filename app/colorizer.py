@@ -8,6 +8,7 @@ from PySide6.QtGui import QColor, QTextCharFormat
 
 from app.log_format import LEVEL_TAG_RE, detect_level, keyword_level
 from app.settings import AppSettings
+from app.theme import active_colors
 
 # Zephyr: [HH:MM:SS.mmm,uuu] <level> module: message
 # Also accepts a full-date timestamp variant seen on some boards, e.g.
@@ -61,7 +62,7 @@ class Colorizer:
         level = detect_level(line)
         if level:
             return [(line, _fmt(self._s.level_color(level)))]
-        return [(line, _fmt("#cccccc"))]
+        return [(line, _fmt(active_colors()["plain_text"]))]
 
     def _syntax(self, line: str) -> List[Tuple[str, QTextCharFormat]]:
         # --- Zephyr ---
@@ -69,7 +70,10 @@ class Colorizer:
         if m:
             ts, tag, mod, msg = m.group(1), m.group(2), m.group(3), m.group(4)
             lm = _LEVEL_RE.search(tag)
-            level_color = self._s.level_color(lm.group(1)) if lm else "#cccccc"
+            level_color = (
+                self._s.level_color(lm.group(1))
+                if lm else active_colors()["plain_text"]
+            )
             return [
                 (ts,  _fmt(self._s.syntax_color("timestamp"))),
                 (tag, _fmt(level_color)),
@@ -85,10 +89,10 @@ class Colorizer:
             msg_color = self._s.level_color(level) if level else self._s.syntax_color("message")
             return [
                 (ts,   _fmt(self._s.syntax_color("timestamp"))),
-                (host, _fmt("#cccccc")),
+                (host, _fmt(active_colors()["plain_text"])),
                 (proc, _fmt(self._s.syntax_color("module"))),
                 (msg,  _fmt(msg_color)),
             ]
 
         # --- Fallback ---
-        return [(line, _fmt("#cccccc"))]
+        return [(line, _fmt(active_colors()["plain_text"]))]

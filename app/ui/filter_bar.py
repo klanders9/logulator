@@ -5,6 +5,8 @@ import re
 from typing import Optional
 
 from PySide6.QtCore import QEvent, Qt, Signal
+
+from app.theme import active_colors
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -18,24 +20,26 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-_CHIP_INCLUDE_STYLE = (
-    "QWidget#chip { border: 1px solid #3a6a3a; border-radius: 3px; }"
-)
-_CHIP_EXCLUDE_STYLE = (
-    "QWidget#chip { border: 1px solid #6a3a3a; border-radius: 3px; }"
-)
 _CHIP_LABEL_STYLE = "QLabel { background: transparent; border: none; padding: 0px; }"
-_CHIP_BTN_STYLE = (
-    "QPushButton { color: #888888; background: transparent; border: none;"
-    " padding: 0px; font-size: 11px; min-width: 16px; max-width: 16px;"
-    " min-height: 16px; max-height: 16px; }"
-    "QPushButton:hover { color: #cccccc; }"
-)
+
+
+def _chip_style(mode: str) -> str:
+    key = "chip_include" if mode == "include" else "chip_exclude"
+    return "QWidget#chip { border: 1px solid %s; border-radius: 3px; }" % (
+        active_colors()[key]
+    )
+
+
+def _chip_button_style() -> str:
+    c = active_colors()
+    return (
+        "QPushButton { color: %s; background: transparent; border: none;"
+        " padding: 0px; font-size: 11px; min-width: 16px; max-width: 16px;"
+        " min-height: 16px; max-height: 16px; }"
+        "QPushButton:hover { color: %s; }" % (c["muted_text"], c["plain_text"])
+    )
 
 _TYPE_ABBREV = {"substring": "sub", "regex": "rgx", "level": "lvl", "module": "mod"}
-
-_INPUT_ERROR_STYLE = "QLineEdit { background: #3a0000; }"
-
 
 def _chip_label_text(rule: dict) -> str:
     prefix = "+" if rule.get("mode", "include") == "include" else "−"
@@ -54,12 +58,7 @@ class _RuleChip(QWidget):
     def __init__(self, rule: dict, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setObjectName("chip")
-        style = (
-            _CHIP_INCLUDE_STYLE
-            if rule.get("mode", "include") == "include"
-            else _CHIP_EXCLUDE_STYLE
-        )
-        self.setStyleSheet(style)
+        self.setStyleSheet(_chip_style(rule.get("mode", "include")))
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(5, 1, 2, 1)
@@ -70,7 +69,7 @@ class _RuleChip(QWidget):
         layout.addWidget(label)
 
         btn = QPushButton("×")
-        btn.setStyleSheet(_CHIP_BTN_STYLE)
+        btn.setStyleSheet(_chip_button_style())
         btn.clicked.connect(lambda _: self.remove_clicked.emit())
         layout.addWidget(btn)
 
@@ -232,8 +231,16 @@ class FilterBar(QWidget):
         self._input.clear()
         self._commit()
 
+    def restyle(self) -> None:
+        """Re-apply theme-derived styling after a theme switch."""
+        self._rebuild_chips()
+        if self._input.toolTip():
+            self._show_input_error(self._input.toolTip())
+
     def _show_input_error(self, message: str) -> None:
-        self._input.setStyleSheet(_INPUT_ERROR_STYLE)
+        self._input.setStyleSheet(
+            "QLineEdit { background: %s; }" % active_colors()["error_field"]
+        )
         self._input.setToolTip(message)
 
     def _clear_input_error(self) -> None:

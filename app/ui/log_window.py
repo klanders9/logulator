@@ -27,20 +27,18 @@ from app import filter_engine
 from app.colorizer import Colorizer
 from app.log_format import detect_level
 from app.settings import AppSettings
-from app.theme import apply_palette
+from app.theme import active_colors, apply_palette
 from app.ui.filter_bar import FilterBar
 from app.ui.log_pane import (
-    _PLAIN_COLOR,
     _fmt,
+    _plain_color,
     doc_line_count,
     make_pane,
     pane_with_header,
+    restyle_pane,
+    restyle_pane_header,
 )
 from app.ui.minimap import Minimap
-
-# Minimap band colors that do not come from a severity level.
-_SEPARATOR_COLOR = "#555555"   # the "--- reconnected ---" marker lines
-_NEUTRAL_COLOR = "#444444"     # no detectable level
 
 # Initial raw/filtered split the first time the filtered pane is revealed.
 _RAW_SPLIT_FRACTION = 0.6
@@ -85,7 +83,7 @@ class LogWindowMixin:
         """Set up the state the rest of the mixin depends on."""
         self._settings = settings
         self._colorizer = Colorizer(settings)
-        self._plain_fmt = _fmt(_PLAIN_COLOR)
+        self._plain_fmt = _fmt(_plain_color())
         self._rules: list = []
         self._filter_mode = "OR"
         self._splitter_initialized = False
@@ -322,11 +320,11 @@ class LogWindowMixin:
         if line.startswith(">> "):
             return QColor(self._settings.tx_color())
         if line.startswith("---"):
-            return QColor(_SEPARATOR_COLOR)
+            return QColor(active_colors()["separator"])
         level = detect_level(line)
         if level:
             return QColor(self._settings.level_color(level))
-        return QColor(_NEUTRAL_COLOR)
+        return QColor(active_colors()["neutral_band"])
 
     def _rebuild_minimap(self, pane, minimap) -> None:
         doc = pane.document()
@@ -408,8 +406,27 @@ class LogWindowMixin:
         self._apply_minimap_settings()
 
     def _on_theme_changed(self, theme: str) -> None:
-        # Palette is application-wide, so this already reaches every window.
+        # The palette is application-wide, but the log-pane chrome, minimap
+        # bands and plain-line colour come from theme.active_colors() and are
+        # baked into stylesheets and text formats, so every window has to be
+        # restyled and rebuilt for the switch to take.
         apply_palette(QApplication.instance(), theme)
+        for window in open_log_windows():
+            window._apply_theme()
+
+    def _apply_theme(self) -> None:
+        self._plain_fmt = _fmt(_plain_color())
+        restyle_pane_header(self._raw_header)
+        restyle_pane_header(self._filtered_header)
+        for pane in (self._raw_pane, self._filtered_pane):
+            restyle_pane(pane)
+        for minimap in (self._minimap, self._filtered_minimap):
+            minimap.restyle()
+        self._filter_bar.restyle()
+        find_bar = getattr(self, "_find_bar", None)
+        if find_bar is not None:
+            find_bar.restyle()
+        self._apply_display_settings()
 
     def _on_font_size_changed(self, size: int) -> None:
         for window in open_log_windows():

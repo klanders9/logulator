@@ -9,10 +9,9 @@ from PySide6.QtCore import QObject, QTimer
 from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import QTextEdit
 
+from app.theme import active_colors
 from app.ui.find_bar import FindBar
 from app.ui.log_pane import LogPane
-
-_MATCH_BG = QColor("#443900")  # non-current match: dark amber
 
 # Maximum ExtraSelections applied at once (performance guard)
 _MAX_HIGHLIGHTS = 5000
@@ -138,7 +137,7 @@ class FindController(QObject):
 
     def _apply_highlights(self) -> None:
         non_current_fmt = QTextCharFormat()
-        non_current_fmt.setBackground(_MATCH_BG)
+        non_current_fmt.setBackground(QColor(active_colors()["match_highlight"]))
 
         # Cap highlights for performance; always include a window around current
         total = len(self._matches)

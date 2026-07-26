@@ -13,8 +13,9 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPaintEvent
 from PySide6.QtWidgets import QWidget
 
+from app.theme import active_colors
+
 _WIDTH = 16
-_NEUTRAL_COLOR = QColor("#444444")
 
 
 class Minimap(QWidget):
@@ -32,7 +33,13 @@ class Minimap(QWidget):
         self._viewport_end = 1.0
         self.setFixedWidth(_WIDTH)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setStyleSheet("border-left: 1px solid #555555;")
+        self.restyle()
+
+    def restyle(self) -> None:
+        """Re-apply theme-derived styling after a theme switch."""
+        self.setStyleSheet(
+            "border-left: 1px solid %s;" % active_colors()["border"]
+        )
 
     def set_cap(self, cap: int) -> None:
         self._cap = cap

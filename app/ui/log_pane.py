@@ -8,13 +8,18 @@ from PySide6.QtCore import QMimeData, Signal
 from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor, QTextDocument
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QTextEdit, QVBoxLayout, QWidget
 
+from app.theme import active_colors
+
 _DEFAULT_CAP = 100_000
-_PANE_STYLE = (
-    "QTextEdit {"
-    "  border: 1px solid #555555;"
-    "}"
-)
-_PLAIN_COLOR = "#cccccc"
+
+
+def _pane_style() -> str:
+    return "QTextEdit { border: 1px solid %s; }" % active_colors()["border"]
+
+
+def _plain_color() -> str:
+    """Default text color for a line with no recognised structure."""
+    return active_colors()["plain_text"]
 
 
 def _fmt(hex_color: str) -> QTextCharFormat:
@@ -147,10 +152,26 @@ class LogPane(QTextEdit):
         self.setDocument(new_doc)
 
 
+def _style_pane_header(header: QLabel) -> None:
+    header.setStyleSheet(
+        "color: %s; font-size: 11px; padding: 1px 4px;"
+        % active_colors()["header_text"]
+    )
+
+
+def restyle_pane(pane: LogPane) -> None:
+    """Re-apply theme-derived styling after a theme switch."""
+    pane.setStyleSheet(_pane_style())
+
+
+def restyle_pane_header(header: QLabel) -> None:
+    _style_pane_header(header)
+
+
 def make_pane(font: QFont, cap: Optional[int] = None) -> LogPane:
     pane = LogPane()
     pane.setReadOnly(True)
-    pane.setStyleSheet(_PANE_STYLE)
+    pane.setStyleSheet(_pane_style())
     pane.setFont(font)
     if cap is not None:
         pane.set_cap(cap)
@@ -177,7 +198,8 @@ def pane_with_header(
     below the header, so it lines up with the pane's rows rather than
     spanning the header too."""
     header = QLabel(title)
-    header.setStyleSheet("color: #999999; font-size: 11px; padding: 1px 4px;")
+    header.setObjectName("paneHeader")
+    _style_pane_header(header)
     container = QWidget()
     layout = QVBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)

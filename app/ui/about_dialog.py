@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QPixmap
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QVBoxLayout
 
+from app.theme import active_colors
 from app.version import __version__
 
 _REPO_URL = "https://github.com/klanders9/logulator"
@@ -53,7 +54,7 @@ class AboutDialog(QDialog):
 
         copyright_label = QLabel("Copyright © 2026 Kevin Landers")
         copyright_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        copyright_label.setStyleSheet("color: #888888;")
+        copyright_label.setStyleSheet("color: %s;" % active_colors()["muted_text"])
         layout.addWidget(copyright_label)
 
         license_label = QLabel("License: MIT")
@@ -67,7 +68,9 @@ class AboutDialog(QDialog):
 
         sdg_label = QLabel("† Soli Deo Gloria")
         sdg_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sdg_label.setStyleSheet("color: #888888; font-style: italic;")
+        sdg_label.setStyleSheet(
+            "color: %s; font-style: italic;" % active_colors()["muted_text"]
+        )
         layout.addWidget(sdg_label)
 
         layout.addSpacing(4)

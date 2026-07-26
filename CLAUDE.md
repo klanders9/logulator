@@ -734,7 +734,26 @@ Applies the Fusion Qt style and a named `QPalette` to the `QApplication`.
 Two themes are available; both are applied on all platforms.
 
 `apply_palette(app, theme)` — dispatch entry point. `theme` is `'dracula'`
-or `'vscode'`; falls back to Dracula for unknown values.
+or `'vscode'`; falls back to Dracula for unknown values. It also records the
+active theme so `active_colors()` works without an `AppSettings` instance.
+
+**Semantic colors.** `QPalette` does not cover log-pane chrome, minimap bands,
+inline error fields or filter chips, so `_THEME_COLORS` defines those per
+theme and `colors(name)` / `active_colors()` expose them: `plain_text`,
+`muted_text`, `header_text`, `border`, `separator`, `neutral_band`,
+`error_field`, `match_highlight`, `chip_include`, `chip_exclude`. Every theme
+must define every key. Widgets look these up instead of hardcoding hex, which
+is what made the old values (all tuned for Dracula) stay put under VS Code
+Dark.
+
+Because those values are baked into stylesheets and `QTextCharFormat`s at
+build time, a live switch has to re-apply them: `LogWindowMixin._on_theme_changed`
+calls `apply_palette` then `_apply_theme()` on every open window, which
+restyles the panes, headers, minimaps, filter bar and find bar and rebuilds
+the panes so existing lines pick up the new `plain_text`. Widgets that carry
+theme-derived styling expose a `restyle()` for this. Transient states (the
+find bar's no-match field, the filter bar's invalid-regex field) are
+re-applied too, so they don't keep the previous theme's red.
 
 **Dracula** (`'dracula'`): window/panel bg `#282a36`, input bg `#21222c`,
 buttons/surfaces `#44475a`, primary text `#f8f8f2`, disabled text `#6272a4`,

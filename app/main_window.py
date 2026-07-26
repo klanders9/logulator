@@ -26,6 +26,7 @@ from app import filter_engine
 from app.log_writer import LogWriter
 from app.serial_worker import SerialWorker
 from app.settings import AppSettings
+from app.theme import active_colors
 from app.ui.find_bar import FindBar
 from app.ui.find_controller import FindController
 from app.ui.log_pane import _fmt
@@ -323,7 +324,7 @@ class MainWindow(LogWindowMixin, QMainWindow):
             self._on_disconnect(prompt_clear=False)
 
     def _append_separator(self, text: str):
-        sep_fmt = _fmt("#555555")
+        sep_fmt = _fmt(active_colors()["separator"])
         self._raw_pane.append_line([(text, sep_fmt)])
         if self._minimap.isVisible():
             self._minimap.append_color(self._minimap_color_for(text))
