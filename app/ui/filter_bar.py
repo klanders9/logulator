@@ -292,11 +292,17 @@ class FilterBar(QWidget):
         self._commit()
 
     def _rebuild_chips(self):
-        # Remove all chips, preserving the trailing stretch (last item)
+        # Remove all chips, preserving the trailing stretch (last item).
         while self._chip_layout.count() > 1:
             item = self._chip_layout.takeAt(0)
             w = item.widget()
             if w:
+                # Unparent before deleteLater(): taking a widget out of a
+                # layout leaves it a child of the container, still painted at
+                # its old geometry until the event loop gets round to the
+                # deferred deletion. It also stops the pending deletion from
+                # outliving the FilterBar that parents it.
+                w.setParent(None)
                 w.deleteLater()
 
         for i, rule in enumerate(self._rules):

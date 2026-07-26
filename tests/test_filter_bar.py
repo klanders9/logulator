@@ -91,11 +91,6 @@ class TestChips:
     def test_strip_hidden_when_no_rules(self, bar):
         assert not bar._chip_scroll.isVisible()
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="_rebuild_chips only calls deleteLater(), so removed chips stay "
-               "parented and keep painting until the event loop runs",
-    )
     def test_removed_chips_are_detached_immediately(self, bar):
         bar.add_rule("a")
         bar.add_rule("b")
@@ -122,6 +117,20 @@ class TestChips:
         with qtbot.waitSignal(bar.filters_changed) as blocker:
             bar._remove_rule(0)
         assert blocker.args[0] == []
+
+    def test_rebuilding_leaves_no_orphan_chips(self, bar):
+        for v in ("a", "b", "c"):
+            bar.add_rule(v)
+        bar._remove_rule(1)
+        assert len(chip_children(bar)) == len(chips(bar)) == 2
+
+    def test_clearing_all_rules_removes_every_chip(self, bar):
+        bar.add_rule("a")
+        bar.add_rule("b")
+        bar._remove_rule(0)
+        bar._remove_rule(0)
+        assert chip_children(bar) == []
+
 
 
 class TestChipLabels:
