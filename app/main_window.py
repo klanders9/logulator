@@ -339,7 +339,7 @@ class MainWindow(LogWindowMixin, QMainWindow):
         self._worker.send((text + ending).encode("utf-8"))
         # Record TX in the session log with a '>> ' marker so the file
         # captures both directions of the conversation.
-        self._log_writer.write(b">> " + text.encode("utf-8") + b"\n")
+        self._log_writer.write_tx_line(text)
         echo = ">> " + text
         self._raw_pane.append_line(self._get_segments(echo, "raw"))
         if self._minimap.isVisible():

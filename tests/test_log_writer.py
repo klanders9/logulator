@@ -152,3 +152,122 @@ class TestLogDirectory:
                 w.open_session()
         finally:
             blocked.chmod(0o700)
+
+
+class TestTransmitRecords:
+    def test_tx_line_gets_the_marker(self, writer):
+        writer.open_session()
+        writer.write_tx_line("kernel reboot")
+        assert writer.current_path.read_bytes() == b">> kernel reboot\n"
+
+    def test_tx_after_a_complete_rx_line_adds_no_blank_line(self, writer):
+        writer.open_session()
+        writer.write(b"[00:00:01] <inf> app: ready\n")
+        writer.write_tx_line("help")
+        assert writer.current_path.read_bytes() == (
+            b"[00:00:01] <inf> app: ready\n>> help\n"
+        )
+
+    def test_tx_mid_line_starts_a_new_line_first(self, writer):
+        """RX chunks routinely end mid-line; the marker must not be spliced in."""
+        writer.open_session()
+        writer.write(b"[00:00:01] <inf> app: partial")
+        writer.write_tx_line("help")
+        assert writer.current_path.read_bytes() == (
+            b"[00:00:01] <inf> app: partial\n>> help\n"
+        )
+
+    def test_rx_continues_on_its_own_line_after_a_tx_record(self, writer):
+        writer.open_session()
+        writer.write(b"partial")
+        writer.write_tx_line("help")
+        writer.write(b" continues\n")
+        lines = writer.current_path.read_bytes().split(b"\n")
+        assert lines[0] == b"partial"
+        assert lines[1] == b">> help"
+
+    def test_first_tx_of_a_session_adds_no_leading_newline(self, writer):
+        writer.open_session()
+        writer.write_tx_line("first")
+        assert not writer.current_path.read_bytes().startswith(b"\n")
+
+    def test_empty_tx_line_is_recorded(self, writer):
+        """Sending a bare line ending is a normal way to nudge a shell prompt."""
+        writer.open_session()
+        writer.write_tx_line("")
+        assert writer.current_path.read_bytes() == b">> \n"
+
+    def test_tx_before_open_is_a_no_op(self, writer):
+        writer.write_tx_line("nowhere")
+        assert writer.current_path is None
+
+    def test_line_state_resets_between_sessions(self, writer):
+        writer.open_session()
+        writer.write(b"mid-line")
+        writer.close()
+        writer.open_session()
+        writer.write_tx_line("fresh")
+        assert writer.current_path.read_bytes() == b">> fresh\n"
+
+
+class TestThreadSafety:
+    def test_concurrent_rx_and_tx_never_interleave_within_a_record(self, writer):
+        """Every line must be either a whole RX line or a whole TX record."""
+        import threading
+
+        writer.open_session()
+        rx_line = b"x" * 200 + b"\n"
+        errors = []
+
+        def rx():
+            try:
+                for _ in range(200):
+                    writer.write(rx_line)
+            except Exception as exc:  # pragma: no cover
+                errors.append(exc)
+
+        def tx():
+            try:
+                for i in range(200):
+                    writer.write_tx_line(f"cmd{i}")
+            except Exception as exc:  # pragma: no cover
+                errors.append(exc)
+
+        threads = [threading.Thread(target=rx), threading.Thread(target=tx)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors
+        content = writer.current_path.read_bytes()
+        for line in content.split(b"\n"):
+            if not line:
+                continue
+            assert line == b"x" * 200 or line.startswith(b">> cmd"), line
+
+    def test_close_during_concurrent_writes_does_not_raise(self, writer):
+        """write() must not race the open/closed check against close()."""
+        import threading
+
+        writer.open_session()
+        errors = []
+        stop = threading.Event()
+
+        def rx():
+            try:
+                while not stop.is_set():
+                    writer.write(b"data\n")
+            except Exception as exc:
+                errors.append(exc)
+
+        t = threading.Thread(target=rx)
+        t.start()
+        try:
+            for _ in range(50):
+                writer.close()
+                writer.open_session()
+        finally:
+            stop.set()
+            t.join()
+        assert not errors

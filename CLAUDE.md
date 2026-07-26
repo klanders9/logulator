@@ -14,6 +14,9 @@ Raw log collection and filtered display are strictly separated:
 - One deliberate extension (user-approved): sent (TX) lines are also recorded
   in the session log, marked with a `>> ` prefix, so the file captures both
   directions of the conversation. TX never modifies or filters RX bytes.
+  A TX record starts a fresh line when the file is mid-line, so the marker is
+  never spliced into a partially received RX line — the newline belongs to the
+  TX extension, and RX bytes are still written verbatim and in order.
 
 ## Tech Stack
 - Python 3.9+ (matches `requires-python` in `pyproject.toml` and the .venv —
@@ -39,6 +42,13 @@ Opens a new timestamped `logs/session_YYYYMMDD_HHMMSS.log` per connection
 session. Append-only, flushes after every write. Exposes `current_path:
 Optional[Path]` for the status bar to read file size. Path is cleared on
 `close()`.
+
+Written from two threads — the serial worker appends RX bytes, the GUI thread
+records TX lines — so a reentrant lock guards every file access. That also
+makes the open/closed check atomic against `close()`; previously a write
+racing a disconnect could raise `ValueError: write to closed file` inside the
+worker. `write_tx_line(text)` is the TX entry point and inserts a leading
+newline when mid-line; `write(data)` appends RX bytes verbatim.
 
 The destination comes from `AppSettings.log_dir()` (default `~/logs`), which
 `MainWindow._on_connect` pushes in via `set_log_dir()` before each session, so
