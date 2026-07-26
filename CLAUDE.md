@@ -233,10 +233,18 @@ filtered pane's container
 pane — see below) in both `MainWindow` and `FileViewer`, so the controls sit
 directly above the content they affect.
 
-- **Input row** (`_input_row`): text input, type selector
+- **Input row** (`_input_row`): value editor, type selector
   (substring/regex/level/module), include/exclude selector, an `Aa` match-case
   toggle (checked by default, so rules stay case-sensitive unless asked
-  otherwise), AND/OR mode toggle, Add button. Hidden by default; toggled by a
+  otherwise; disabled for level and module, where it does nothing), AND/OR
+  mode toggle, Add button.
+  The value editor swaps with the type: `level` shows `_level_combo` (a fixed
+  err/wrn/inf/dbg dropdown) and the other types show `_input` with a
+  type-specific placeholder. Level rules take one of four internal keys, so
+  free text was unusable — "warning", "<wrn>", "warn" and "WRN" all silently
+  matched nothing and only "wrn" worked. The dropdown labels also name the
+  keywords each level catches (`wrn — <wrn>, warning, warn`), which is the
+  only place the keyword fallback is visible in the UI. Hidden by default; toggled by a
   toolbar action. Escape dismisses it and emits `input_bar_closed`.
   Regex values are `re.compile`d before the rule is accepted; a bad pattern
   reddens the input, puts the `re.error` in its tooltip and adds nothing.

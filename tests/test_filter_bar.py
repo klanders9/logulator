@@ -307,3 +307,77 @@ class TestRegexValidation:
         bar._input.setText("[")
         bar._add_rule()
         assert bar.get_rules() == []
+
+
+class TestLevelRuleEditor:
+    """Level rules take fixed keys, so the value must be picked, not typed.
+
+    Typing "warning", "<wrn>", "warn" or "WRN" all silently matched nothing;
+    only the internal key "wrn" worked, and nothing in the UI said so.
+    """
+
+    def test_level_type_swaps_in_the_dropdown(self, bar):
+        bar._type_combo.setCurrentText("level")
+        assert bar._level_combo.isVisible() or not bar._input.isVisible()
+        assert bar._input.isVisible() is False
+
+    def test_other_types_use_the_text_box(self, bar):
+        bar._type_combo.setCurrentText("level")
+        bar._type_combo.setCurrentText("substring")
+        assert bar._level_combo.isVisible() is False
+
+    def test_dropdown_offers_exactly_the_four_levels(self, bar):
+        keys = [bar._level_combo.itemData(i) for i in range(bar._level_combo.count())]
+        assert keys == ["err", "wrn", "inf", "dbg"]
+
+    def test_labels_name_the_keywords_they_match(self, bar):
+        """The label is the only place the keyword fallback is documented."""
+        labels = [bar._level_combo.itemText(i) for i in range(bar._level_combo.count())]
+        joined = " ".join(labels)
+        for word in ("<err>", "fatal", "warning", "notice", "trace"):
+            assert word in joined
+
+    def test_adding_a_level_rule_uses_the_key_not_the_label(self, bar):
+        bar._type_combo.setCurrentText("level")
+        bar._level_combo.setCurrentIndex(1)  # wrn
+        bar._add_rule()
+        assert bar.get_rules() == [
+            {"type": "level", "value": "wrn", "mode": "include", "ignore_case": False}
+        ]
+
+    def test_level_rule_needs_no_text_in_the_box(self, bar):
+        bar._type_combo.setCurrentText("level")
+        bar._input.clear()
+        bar._add_rule()
+        assert len(bar.get_rules()) == 1
+
+    def test_level_rule_honours_include_exclude(self, bar):
+        bar._type_combo.setCurrentText("level")
+        bar._inc_exc_combo.setCurrentText("exclude")
+        bar._add_rule()
+        assert bar.get_rules()[0]["mode"] == "exclude"
+
+    def test_stale_text_in_the_box_is_ignored(self, bar):
+        bar._input.setText("warning")
+        bar._type_combo.setCurrentText("level")
+        bar._add_rule()
+        assert bar.get_rules()[0]["value"] == "err"
+
+
+class TestValueHints:
+    def test_each_text_type_explains_what_it_wants(self, bar):
+        for rule_type, expected in [
+            ("substring", "Text to match…"),
+            ("regex", "Regular expression…"),
+            ("module", "Module name or prefix…"),
+        ]:
+            bar._type_combo.setCurrentText(rule_type)
+            assert bar._input.placeholderText() == expected
+
+    def test_match_case_is_disabled_where_it_does_nothing(self, bar):
+        for rule_type in ("level", "module"):
+            bar._type_combo.setCurrentText(rule_type)
+            assert bar._case_btn.isEnabled() is False
+        for rule_type in ("substring", "regex"):
+            bar._type_combo.setCurrentText(rule_type)
+            assert bar._case_btn.isEnabled() is True

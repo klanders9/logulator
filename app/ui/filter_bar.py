@@ -41,6 +41,23 @@ def _chip_button_style() -> str:
 
 _TYPE_ABBREV = {"substring": "sub", "regex": "rgx", "level": "lvl", "module": "mod"}
 
+# (rule value, dropdown label). The label names the Zephyr tag and the words
+# the keyword fallback recognises, so what a level rule actually selects is
+# visible without reading the source.
+_LEVEL_CHOICES = [
+    ("err", "err — <err>, error, fatal, critical"),
+    ("wrn", "wrn — <wrn>, warning, warn"),
+    ("inf", "inf — <inf>, info, notice"),
+    ("dbg", "dbg — <dbg>, debug, trace"),
+]
+
+# What the free-text box is asking for, per rule type.
+_PLACEHOLDERS = {
+    "substring": "Text to match…",
+    "regex": "Regular expression…",
+    "module": "Module name or prefix…",
+}
+
 def _chip_label_text(rule: dict) -> str:
     prefix = "+" if rule.get("mode", "include") == "include" else "−"
     t = _TYPE_ABBREV.get(rule["type"], rule["type"][:3])
@@ -99,13 +116,23 @@ class FilterBar(QWidget):
         ir.setSpacing(4)
 
         self._input = QLineEdit()
-        self._input.setPlaceholderText("Filter value…")
         self._input.returnPressed.connect(self._add_rule)
         self._input.textEdited.connect(lambda _text: self._clear_input_error())
         self._input.installEventFilter(self)
 
+        # Level rules take one of four fixed keys, so they get a dropdown
+        # rather than the free-text box: typing "warning", "<wrn>" or "warn"
+        # all silently matched nothing, and only the internal key "wrn" worked.
+        # The labels double as documentation for the keyword fallback, which
+        # is what makes level rules work on syslog and unstructured logs.
+        self._level_combo = QComboBox()
+        for key, label in _LEVEL_CHOICES:
+            self._level_combo.addItem(label, key)
+        self._level_combo.setVisible(False)
+
         self._type_combo = QComboBox()
         self._type_combo.addItems(["substring", "regex", "level", "module"])
+        self._type_combo.currentTextChanged.connect(self._on_type_changed)
 
         self._inc_exc_combo = QComboBox()
         self._inc_exc_combo.addItems(["include", "exclude"])
@@ -128,11 +155,16 @@ class FilterBar(QWidget):
         add_btn.clicked.connect(self._add_rule)
 
         ir.addWidget(self._input, stretch=1)
+        ir.addWidget(self._level_combo, stretch=1)
         ir.addWidget(self._type_combo)
         ir.addWidget(self._inc_exc_combo)
         ir.addWidget(self._case_btn)
         ir.addWidget(self._mode_btn)
         ir.addWidget(add_btn)
+
+        # currentTextChanged does not fire for the initial index, so set the
+        # editor up for the starting rule type explicitly.
+        self._on_type_changed(self._type_combo.currentText())
 
         self._input_row.setVisible(_input_bar_open)
         self._input_open = _input_bar_open
@@ -205,11 +237,34 @@ class FilterBar(QWidget):
 
     # ---- Internal rule management ----
 
+    def _on_type_changed(self, rule_type: str) -> None:
+        """Swap the value editor to suit the rule type."""
+        is_level = rule_type == "level"
+        self._input.setVisible(not is_level)
+        self._level_combo.setVisible(is_level)
+        self._input.setPlaceholderText(_PLACEHOLDERS.get(rule_type, ""))
+        # Case sensitivity only applies to substring and regex; level keys are
+        # fixed and module names are matched as written.
+        self._case_btn.setEnabled(rule_type in ("substring", "regex"))
+        self._clear_input_error()
+        if not is_level:
+            self._input.setFocus()
+
     def _add_rule(self):
+        rule_type = self._type_combo.currentText()
+        if rule_type == "level":
+            self._rules.append({
+                "type": "level",
+                "value": self._level_combo.currentData(),
+                "mode": self._inc_exc_combo.currentText(),
+                "ignore_case": False,
+            })
+            self._commit()
+            return
+
         value = self._input.text().strip()
         if not value:
             return
-        rule_type = self._type_combo.currentText()
         if rule_type == "regex":
             # filter_engine returns False for an unparseable pattern, so an
             # unvalidated include silently emptied the filtered pane and an
