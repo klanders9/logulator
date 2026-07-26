@@ -177,6 +177,11 @@ class SettingsSidebar(QWidget):
         self._cap_spin.setSingleStep(1_000)
         self._cap_spin.setValue(settings.buffer_cap())
         self._cap_spin.setFixedWidth(90)
+        # Without this, valueChanged fires on every keystroke: typing "250000"
+        # emits 2, 25, 250, ... clamped to the 1,000 minimum along the way, and
+        # each intermediate value trims the panes irreversibly. Raising the cap
+        # would destroy most of the buffer before reaching the intended number.
+        self._cap_spin.setKeyboardTracking(False)
         self._cap_spin.valueChanged.connect(self._on_buffer_cap_changed)
         cap_row.addWidget(self._cap_spin)
         layout.addLayout(cap_row)
