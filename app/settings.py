@@ -70,14 +70,16 @@ class AppSettings:
         return v if v in ("level", "syntax") else "level"
 
     def set_color_mode(self, val: str) -> None:
-        self._qs.setValue("color/mode", val)
+        if val in ("level", "syntax"):
+            self._qs.setValue("color/mode", val)
 
     def color_apply_to(self) -> str:
         v = self._qs.value("color/apply_to", "all")
         return v if v in ("all", "raw", "filtered", "none") else "all"
 
     def set_color_apply_to(self, val: str) -> None:
-        self._qs.setValue("color/apply_to", val)
+        if val in ("all", "raw", "filtered", "none"):
+            self._qs.setValue("color/apply_to", val)
 
     def level_color(self, level: str) -> str:
         return self._qs.value(

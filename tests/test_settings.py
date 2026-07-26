@@ -22,6 +22,8 @@ class TestValidatedEnums:
     @pytest.mark.parametrize(
         "getter,setter,good,bad,default",
         [
+            ("color_mode", "set_color_mode", "syntax", "sideways", "level"),
+            ("color_apply_to", "set_color_apply_to", "raw", "elsewhere", "all"),
             ("minimap_apply_to", "set_minimap_apply_to", "filtered", "nope", "raw"),
             ("theme", "set_theme", "vscode", "solarized", "dracula"),
             ("serial_parity", "set_serial_parity", "E", "Z", "N"),
@@ -36,24 +38,6 @@ class TestValidatedEnums:
         assert getattr(settings, getter)() == good
         getattr(settings, setter)(bad)
         assert getattr(settings, getter)() == good, "invalid value must not be stored"
-
-    @pytest.mark.xfail(
-        strict=True,
-        reason="set_color_mode/set_color_apply_to write unvalidated, unlike every "
-               "other enum setter; the getter then falls back to the default and "
-               "the previous valid value is lost",
-    )
-    @pytest.mark.parametrize(
-        "getter,setter,good,bad",
-        [
-            ("color_mode", "set_color_mode", "syntax", "sideways"),
-            ("color_apply_to", "set_color_apply_to", "raw", "elsewhere"),
-        ],
-    )
-    def test_color_setters_reject_bad_values(self, settings, getter, setter, good, bad):
-        getattr(settings, setter)(good)
-        getattr(settings, setter)(bad)
-        assert getattr(settings, getter)() == good
 
     def test_databits(self, settings):
         assert settings.serial_databits() == 8
