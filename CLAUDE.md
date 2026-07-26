@@ -512,7 +512,14 @@ read) into `_tail_buffer` to handle partial lines, then complete lines are
 appended to both panes. If the user scrolls up, `_follow_paused` is set and
 a "⬇ Resume" toolbar action appears; scrolling back to the bottom or clicking
 Resume clears the pause. `_programmatic_scroll` flag prevents spurious pause
-detection when the code scrolls to bottom. `QFileSystemWatcher` is cleaned up
+detection when the code scrolls to bottom.
+
+If the file **shrinks** (truncated or rotated), `_on_file_changed` calls
+`_restart_follow_after_truncation()`, which cancels the loader, clears both
+panes and minimaps and reloads from scratch. `_follow_pos` only ever grew
+before, so a seek past the new end returned nothing and follow was silently
+dead for the life of the window. Reloading rather than appending from offset 0
+keeps the pane matching the file, since the old content is gone. `QFileSystemWatcher` is cleaned up
 in `closeEvent` and the path is re-added if the watcher drops it (some
 platforms remove the watch after the first change event).
 

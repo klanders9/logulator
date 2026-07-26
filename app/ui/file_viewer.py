@@ -243,6 +243,24 @@ class FileViewer(LogWindowMixin, QMainWindow):
             if watched:
                 self._watcher.removePaths(watched)
 
+    def _restart_follow_after_truncation(self) -> None:
+        """Reload from scratch after the followed file shrank.
+
+        Reloading rather than appending from offset 0 keeps the pane matching
+        the file: the old content is gone, so continuing to show it would
+        misrepresent what is on disk.
+        """
+        if self._worker is not None:
+            self._worker.cancel()
+        self._follow_pos = 0
+        self._tail_buffer = ""
+        self._total_lines = 0
+        self._raw_pane.clear()
+        self._filtered_pane.clear()
+        self._minimap.clear()
+        self._filtered_minimap.clear()
+        self._start_load()
+
     def _scroll_to_follow_bottom(self) -> None:
         self._programmatic_scroll = True
         for pane in (self._raw_pane, self._filtered_pane):
@@ -259,6 +277,14 @@ class FileViewer(LogWindowMixin, QMainWindow):
             if self._path.exists():
                 self._watcher.addPath(str(self._path))
         try:
+            size = self._path.stat().st_size
+            if size < self._follow_pos:
+                # Truncated or rotated. _follow_pos only ever grew, so a seek
+                # past the new end returned nothing forever and follow was
+                # silently dead for the life of the window. Restart from the
+                # top of the replacement file.
+                self._restart_follow_after_truncation()
+                return
             with open(self._path, "rb") as f:
                 f.seek(self._follow_pos)
                 new_bytes = f.read()
