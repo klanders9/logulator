@@ -397,14 +397,26 @@ Strips `\r\n` / `\r` line endings.
 
 ### `app/ui/find_controller.py` — `FindController(QObject)`
 Reusable controller binding a `FindBar` to a `LogPane`. Owns all search
-state: match cursors, current index, 300 ms debounce timer, highlight
+state: match positions, current index, 300 ms debounce timer, highlight
 application (amber ExtraSelections capped at 5,000, blue current-match
 selection, wrap-around navigation, scroll centering). Used by `FileViewer`
 (static file search) and `MainWindow` (live raw-buffer search). Public API:
 `research()` — re-run the current search after the document changed (called
-by `FileViewer._on_load_complete`). In the main window, matches are computed
-on demand and can go stale as lines append/trim — press Enter or retype to
-refresh; acceptable for live use.
+by `FileViewer._on_load_complete`).
+
+Matches are stored as `(start, length)` **integer tuples**, not `QTextCursor`
+objects. Qt repositions every live cursor on every document edit, so holding
+one per match made appends scale with the match count — measured at 7.5×
+slower with 60,000 matches, enough to stall the main window under a busy
+serial feed. Cursors are built on demand in `_cursor_for()`, only for the
+matches actually being highlighted, and return `None` when a stale position no
+longer fits the document.
+
+Because integer positions do not self-adjust, `_refresh_if_stale()` compares
+`QTextDocument.revision()` before each navigation and re-runs the search when
+the document changed, preserving the current index where it can. This is
+stricter than the old behaviour, where stale matches simply pointed at the
+wrong text until the user retyped.
 
 ### `app/ui/find_bar.py` — `FindBar(QWidget)`
 Inline find bar UI (widget only — logic lives in `FindController`). Used by

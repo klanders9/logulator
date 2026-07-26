@@ -1,9 +1,9 @@
 # Copyright (c) 2026 Kevin Landers. SPDX-License-Identifier: MIT
 """Reusable controller binding a FindBar to a LogPane. Owns all search state:
-match cursors, current index, debounce timer, and highlight application.
+match positions, current index, debounce timer, and highlight application.
 Used by FileViewer (static file search) and MainWindow (live buffer search)."""
 
-from typing import List
+from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QObject, QTimer
 from PySide6.QtGui import QColor, QTextCharFormat, QTextCursor
@@ -25,8 +25,15 @@ class FindController(QObject):
         super().__init__(parent)
         self._bar = find_bar
         self._pane = pane
-        self._match_cursors: List[QTextCursor] = []
+        # (start position, length) rather than QTextCursor. Every live cursor
+        # is repositioned by Qt on every document edit, so holding one per
+        # match made appends scale with the match count: measured at 7.5x
+        # slower with 60k matches, enough to stall the main window's live
+        # buffer under a busy serial feed. Cursors are now built on demand,
+        # only for the matches actually being highlighted.
+        self._matches: List[Tuple[int, int]] = []
         self._current_match_idx = -1
+        self._doc_revision = -1
 
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
@@ -54,62 +61,87 @@ class FindController(QObject):
             return
         self._search_timer.start()
 
-    def _do_search(self) -> None:
+    def _do_search(self, keep_index: bool = False) -> None:
         text = self._bar.get_text()
         if not text:
             self._clear_highlights()
             return
 
         doc = self._pane.document()
-        self._match_cursors = []
+        self._matches = []
         cursor = doc.find(text, 0)
         while not cursor.isNull():
-            self._match_cursors.append(cursor)
+            start = cursor.selectionStart()
+            self._matches.append((start, cursor.selectionEnd() - start))
             cursor = doc.find(text, cursor)
+        self._doc_revision = doc.revision()
 
-        total = len(self._match_cursors)
+        total = len(self._matches)
         if total == 0:
+            self._current_match_idx = -1
             self._clear_highlights()
             self._bar.set_match_status(0, 0)
             return
 
-        self._current_match_idx = 0
+        if keep_index and self._current_match_idx >= 0:
+            self._current_match_idx = min(self._current_match_idx, total - 1)
+        else:
+            self._current_match_idx = 0
         self._apply_highlights()
-        self._bar.set_match_status(1, total)
+        self._bar.set_match_status(self._current_match_idx + 1, total)
+
+    def _refresh_if_stale(self) -> None:
+        """Re-run the search when the document changed under us.
+
+        Positions are plain integers, so an append or a buffer trim invalidates
+        them. Qt bumps the document revision on every edit, which makes the
+        check cheap enough to do on each navigation.
+        """
+        if self._doc_revision != self._pane.document().revision():
+            self._do_search(keep_index=True)
+
+    def _step(self, delta: int) -> None:
+        self._refresh_if_stale()
+        if not self._matches:
+            return
+        self._current_match_idx = (self._current_match_idx + delta) % len(self._matches)
+        self._apply_highlights()
+        self._bar.set_match_status(self._current_match_idx + 1, len(self._matches))
 
     def _on_next(self) -> None:
-        if not self._match_cursors:
-            return
-        self._current_match_idx = (self._current_match_idx + 1) % len(
-            self._match_cursors
-        )
-        self._apply_highlights()
-        self._bar.set_match_status(
-            self._current_match_idx + 1, len(self._match_cursors)
-        )
+        self._step(1)
 
     def _on_prev(self) -> None:
-        if not self._match_cursors:
-            return
-        self._current_match_idx = (self._current_match_idx - 1) % len(
-            self._match_cursors
-        )
-        self._apply_highlights()
-        self._bar.set_match_status(
-            self._current_match_idx + 1, len(self._match_cursors)
-        )
+        self._step(-1)
 
     def _on_closed(self) -> None:
         self._clear_highlights()
-        self._match_cursors = []
+        self._matches = []
         self._current_match_idx = -1
+        self._doc_revision = -1
+
+    def _cursor_for(self, index: int) -> Optional[QTextCursor]:
+        """Build a cursor for one match, or None if it no longer fits.
+
+        Clamped against the current document: a match recorded before the
+        buffer was trimmed can point past the end.
+        """
+        start, length = self._matches[index]
+        doc = self._pane.document()
+        end = start + length
+        if start < 0 or end > doc.characterCount():
+            return None
+        cursor = QTextCursor(doc)
+        cursor.setPosition(start)
+        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        return cursor
 
     def _apply_highlights(self) -> None:
         non_current_fmt = QTextCharFormat()
         non_current_fmt.setBackground(_MATCH_BG)
 
         # Cap highlights for performance; always include a window around current
-        total = len(self._match_cursors)
+        total = len(self._matches)
         if total <= _MAX_HIGHLIGHTS:
             indices_to_highlight = range(total)
         else:
@@ -122,16 +154,21 @@ class FindController(QObject):
         for i in indices_to_highlight:
             if i == self._current_match_idx:
                 continue
+            cursor = self._cursor_for(i)
+            if cursor is None:
+                continue
             sel = QTextEdit.ExtraSelection()
             sel.format = non_current_fmt
-            sel.cursor = self._match_cursors[i]
+            sel.cursor = cursor
             selections.append(sel)
 
         self._pane.setExtraSelections(selections)
 
         # Jump to current match using the text cursor (standard selection highlight)
         if 0 <= self._current_match_idx < total:
-            cur = self._match_cursors[self._current_match_idx]
+            cur = self._cursor_for(self._current_match_idx)
+            if cur is None:
+                return
             self._pane.setTextCursor(cur)
             self._pane.ensureCursorVisible()
             rect = self._pane.cursorRect()
