@@ -142,33 +142,8 @@ class AppSettings:
         """Set the session log directory. An empty value restores the default."""
         self._qs.setValue("logging/dir", str(val))
 
-    # --- Filter ---
-
-    def filter_rules(self) -> list:
-        v = self._qs.value("filter/rules", "[]")
-        if not isinstance(v, str):
-            return []
-        try:
-            result = json.loads(v)
-            return result if isinstance(result, list) else []
-        except (json.JSONDecodeError, ValueError):
-            return []
-
-    def set_filter_rules(self, rules: list) -> None:
-        self._qs.setValue("filter/rules", json.dumps(rules))
-
-    def filter_mode(self) -> str:
-        v = self._qs.value("filter/mode", "OR")
-        return v if v in ("AND", "OR") else "OR"
-
-    def set_filter_mode(self, mode: str) -> None:
-        self._qs.setValue("filter/mode", mode)
-
-    def filter_bar_open(self) -> bool:
-        return self._qs.value("filter/bar_open", False, type=bool)
-
-    def set_filter_bar_open(self, val: bool) -> None:
-        self._qs.setValue("filter/bar_open", val)
+    # Filter rules are deliberately not persisted — they are per-session view
+    # state in both windows, so there is no filter_* accessor here.
 
     # --- Recent files ---
 

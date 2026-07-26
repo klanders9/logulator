@@ -223,9 +223,12 @@ Optional and off by default; see `AppSettings.minimap_enabled` /
   ever arrives.
 
 ### `app/ui/filter_bar.py` — `FilterBar(QWidget)`
-Compact two-part filter UI. Constructor: `FilterBar(settings=None, parent=None)`.
-When `settings` is `None` (file viewer), all state is in-memory only — nothing
-is persisted to `AppSettings`. Lives inside the filtered pane's container
+Compact two-part filter UI. Constructor: `FilterBar(parent=None)`. All state
+is in-memory: rules are per-session view state in both windows and nothing is
+written to `AppSettings`. (The class used to take an optional `settings` and
+persist through it, but no caller ever passed one, so the whole branch and the
+matching `AppSettings.filter_*` accessors were unreachable.) Lives inside the
+filtered pane's container
 (inserted into `pane_with_header`'s layout, between the header label and the
 pane — see below) in both `MainWindow` and `FileViewer`, so the controls sit
 directly above the content they affect.
@@ -300,8 +303,9 @@ Wraps `QSettings` (org: `logulator`, app: `logulator`) with typed
 getters/setters and hardcoded defaults. Covers: window geometry, splitter
 state, sidebar open/closed, colorization settings (enabled, mode, apply-to,
 per-level colors, per-syntax-field colors), buffer cap, minimap
-enabled/apply-to, log directory, filter state, recent files, auto-reconnect,
-and app theme. All future persistent settings go through this class.
+enabled/apply-to, log directory, recent files, auto-reconnect, and app theme.
+Filter rules are deliberately **not** persisted — they are per-session view
+state. All future persistent settings go through this class.
 
 Buffer cap: `buffer_cap() -> int` / `set_buffer_cap(val: int)`. Default
 100,000, clamped to [1,000, 500,000] on read and write.
@@ -316,11 +320,6 @@ Minimap: `minimap_enabled() -> bool` / `set_minimap_enabled(val: bool)` —
 stored under `display/minimap_enabled`, default `False`. `minimap_apply_to()
 -> str` / `set_minimap_apply_to(val: str)` — `'all'`/`'raw'`/`'filtered'`,
 stored under `display/minimap_apply_to`, default `'raw'`.
-
-Filter persistence (main window only — file viewers don't persist):
-- `filter_rules() -> list` / `set_filter_rules(rules: list)` — stored as JSON.
-- `filter_mode() -> str` / `set_filter_mode(mode: str)` — `'AND'` or `'OR'`.
-- `filter_bar_open() -> bool` / `set_filter_bar_open(val: bool)`.
 
 Recent files:
 - `recent_files() -> list` — ordered list of path strings, most recent first.

@@ -18,10 +18,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from typing import Optional as _Optional
-
-from app.settings import AppSettings
-
 _CHIP_INCLUDE_STYLE = (
     "QWidget#chip { border: 1px solid #3a6a3a; border-radius: 3px; }"
 )
@@ -85,21 +81,13 @@ class FilterBar(QWidget):
     filters_changed = Signal(list, str)  # (rules, mode)
     input_bar_closed = Signal()  # emitted when Escape dismisses the input bar
 
-    def __init__(
-        self,
-        settings: _Optional[AppSettings] = None,
-        parent: Optional[QWidget] = None,
-    ):
+    def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self._settings = settings
-        if settings is not None:
-            self._rules: list = settings.filter_rules()
-            self._mode: str = settings.filter_mode()
-            _input_bar_open = settings.filter_bar_open()
-        else:
-            self._rules = []
-            self._mode = "OR"
-            _input_bar_open = False
+        # Rules are per-session view state in both windows — nothing here is
+        # persisted, so the bar starts empty and closed every time.
+        self._rules: list = []
+        self._mode: str = "OR"
+        _input_bar_open = False
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -190,8 +178,6 @@ class FilterBar(QWidget):
     def _close_input_bar(self):
         self._input_row.setVisible(False)
         self._input_open = False
-        if self._settings is not None:
-            self._settings.set_filter_bar_open(False)
         self.input_bar_closed.emit()
 
     # ---- Public API ----
@@ -206,8 +192,6 @@ class FilterBar(QWidget):
         else:
             self._input_row.setVisible(True)
             self._input_open = True
-            if self._settings is not None:
-                self._settings.set_filter_bar_open(True)
             self._input.setFocus()
             self._input.selectAll()
 
@@ -263,13 +247,9 @@ class FilterBar(QWidget):
     def _on_mode_toggled(self, checked: bool):
         self._mode = "AND" if checked else "OR"
         self._mode_btn.setText(f"Mode: {self._mode}")
-        if self._settings is not None:
-            self._settings.set_filter_mode(self._mode)
         self.filters_changed.emit(list(self._rules), self._mode)
 
     def _commit(self):
-        if self._settings is not None:
-            self._settings.set_filter_rules(self._rules)
         self._rebuild_chips()
         self._chip_scroll.setVisible(bool(self._rules))
         self.filters_changed.emit(list(self._rules), self._mode)
