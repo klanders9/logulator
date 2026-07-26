@@ -1,9 +1,11 @@
 # Copyright (c) 2026 Kevin Landers. SPDX-License-Identifier: MIT
 """Minimap: a slim colored-band strip next to a LogPane showing a
 down-sampled overview of per-line severity colors, with a draggable
-viewport indicator for quick navigation. Prototype — wired to
-MainWindow's raw pane only, to evaluate the look before wiring it up
-elsewhere."""
+viewport indicator for quick navigation.
+
+Used beside the raw and filtered panes of both MainWindow and FileViewer;
+`LogWindowMixin` owns the wiring. Off by default — see
+`AppSettings.minimap_enabled` / `minimap_apply_to`."""
 
 from typing import List, Optional
 

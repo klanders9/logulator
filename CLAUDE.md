@@ -437,8 +437,11 @@ Reads/writes directly through `AppSettings`.
 ### `app/ui/file_loader.py` — `FileLoaderWorker(QThread)`
 Background worker that streams a static log file in chunks of 2,000 lines.
 Emits `chunk_ready(list[str])` per chunk and `load_complete(int total_lines)`
-when done. Emits `error_occurred(str)` on `OSError`. Caller calls `cancel()`
-to abort early (e.g. on window close). Decodes with UTF-8, replacing errors.
+when done. Emits `error_occurred(str)` on `OSError`. `cancel()` sets the flag;
+`stop(timeout_ms=2000)` cancels and waits, keeping a reference in module-level
+`_orphans` if the thread misses the deadline — destroying a running QThread
+crashes, and the previous bare `wait(500)` let Python drop the last reference
+while the loader was still going. Decodes with UTF-8, replacing errors.
 Strips `\r\n` / `\r` line endings.
 
 ### `app/ui/find_controller.py` — `FindController(QObject)`
@@ -560,6 +563,10 @@ through `MainWindow`.
 `apply_palette(QApplication.instance(), theme)`.
 
 **Signals:** `about_to_close` (for `MainWindow` cleanup).
+
+**Geometry:** saved to and restored from `AppSettings.save_viewer_geometry` /
+`save_viewer_splitter` (keys `viewer/*`), kept separate from the serial
+window's `window/*` since the two layouts are commonly sized differently.
 
 **Colorization:** `_get_segments(line, pane)` follows the same logic as
 `MainWindow`, delegating to a `Colorizer` instance that reads live settings.

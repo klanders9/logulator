@@ -151,3 +151,61 @@ class TestPause:
             f.write("[00:00:03] <inf> app: while paused\n")
         viewer._on_file_changed(str(log_file))
         assert raw_texts(viewer)[-1] == "[00:00:03] <inf> app: while paused"
+
+
+class TestLifecycle:
+    def test_geometry_is_persisted_across_viewers(self, qtbot, log_file):
+        settings = AppSettings()
+        first = FileViewer(settings, log_file)
+        qtbot.addWidget(first)
+        first.show()
+        with qtbot.waitSignal(first._worker.load_complete, timeout=5000):
+            pass
+        # Kept inside the offscreen platform's 800x600 virtual screen,
+        # which otherwise clamps the restored width.
+        first.resize(640, 420)
+        first.close()
+
+        second = FileViewer(settings, log_file)
+        qtbot.addWidget(second)
+        second.show()
+        with qtbot.waitSignal(second._worker.load_complete, timeout=5000):
+            pass
+        try:
+            assert second.size().width() == 640
+            assert second.size().height() == 420
+        finally:
+            second.close()
+
+    def test_viewer_geometry_is_separate_from_the_serial_window(self, qtbot, log_file):
+        """The two windows have different layouts and get sized differently."""
+        settings = AppSettings()
+        v = FileViewer(settings, log_file)
+        qtbot.addWidget(v)
+        v.show()
+        with qtbot.waitSignal(v._worker.load_complete, timeout=5000):
+            pass
+        v.resize(700, 400)
+        v.close()
+        assert settings.load_geometry() is None
+        assert settings.load_viewer_geometry() is not None
+
+    def test_close_stops_the_loader(self, qtbot, log_file):
+        v = FileViewer(AppSettings(), log_file)
+        qtbot.addWidget(v)
+        v.show()
+        with qtbot.waitSignal(v._worker.load_complete, timeout=5000):
+            pass
+        worker = v._worker
+        v.close()
+        assert worker.isFinished()
+
+    def test_closing_mid_load_does_not_leave_a_running_thread(self, qtbot, tmp_path):
+        big = tmp_path / "big.log"
+        big.write_text("".join(f"line {i}\n" for i in range(60_000)))
+        v = FileViewer(AppSettings(), big)
+        qtbot.addWidget(v)
+        v.show()
+        worker = v._worker
+        v.close()
+        assert worker.wait(5000), "loader must stop promptly after cancel"

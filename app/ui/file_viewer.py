@@ -130,6 +130,15 @@ class FileViewer(LogWindowMixin, QMainWindow):
 
         self._apply_minimap_settings()
 
+        # ---- Restore geometry ----
+        geometry = settings.load_viewer_geometry()
+        if geometry:
+            self.restoreGeometry(geometry)
+        splitter_state = settings.load_viewer_splitter()
+        if splitter_state:
+            self._splitter.restoreState(splitter_state)
+            self._splitter_initialized = True
+
         # ---- Start loading ----
         self._start_load()
 
@@ -383,12 +392,13 @@ class FileViewer(LogWindowMixin, QMainWindow):
     # ------------------------------------------------------------------
 
     def closeEvent(self, event) -> None:
+        self._settings.save_viewer_geometry(self.saveGeometry())
+        self._settings.save_viewer_splitter(self._splitter.saveState())
         watched = self._watcher.files()
         if watched:
             self._watcher.removePaths(watched)
         if self._worker is not None:
-            self._worker.cancel()
-            self._worker.wait(500)
+            self._worker.stop()
         self.about_to_close.emit()
         self._release_log_window()
         if self in FileViewer._instances:

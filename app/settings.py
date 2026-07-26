@@ -49,6 +49,23 @@ class AppSettings:
         v = self._qs.value("window/splitter")
         return v if isinstance(v, QByteArray) else None
 
+    # File viewers keep their own geometry, separate from the serial window's:
+    # the two have different layouts and are commonly sized differently.
+
+    def save_viewer_geometry(self, data: QByteArray) -> None:
+        self._qs.setValue("viewer/geometry", data)
+
+    def load_viewer_geometry(self) -> Optional[QByteArray]:
+        v = self._qs.value("viewer/geometry")
+        return v if isinstance(v, QByteArray) else None
+
+    def save_viewer_splitter(self, data: QByteArray) -> None:
+        self._qs.setValue("viewer/splitter", data)
+
+    def load_viewer_splitter(self) -> Optional[QByteArray]:
+        v = self._qs.value("viewer/splitter")
+        return v if isinstance(v, QByteArray) else None
+
     # --- Sidebar ---
 
     def sidebar_open(self) -> bool:
