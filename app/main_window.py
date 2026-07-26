@@ -1,55 +1,35 @@
 # Copyright (c) 2026 Kevin Landers. SPDX-License-Identifier: MIT
-"""Top-level QMainWindow. Composes SerialPanel, FilterBar, and the display panes."""
+"""Top-level QMainWindow for a live serial session.
+
+Adds the serial panel, send bar, status bar and settings sidebar on top of the
+shared pane/filter/minimap behaviour in `LogWindowMixin`."""
 
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import (
-    QAction,
-    QColor,
-    QDesktopServices,
-    QFont,
-    QKeySequence,
-    QTextCharFormat,
-    QTextCursor,
-)
+from PySide6.QtGui import QAction, QDesktopServices, QFont, QKeySequence
 from PySide6.QtWidgets import (
-    QApplication,
     QFileDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
-    QMenu,
     QMessageBox,
-    QSplitter,
     QVBoxLayout,
     QWidget,
 )
 
 from app import filter_engine
-from app.theme import apply_palette
-from app.colorizer import Colorizer, detect_level
 from app.log_writer import LogWriter
 from app.serial_worker import SerialWorker
 from app.settings import AppSettings
-from app.ui.filter_bar import FilterBar
 from app.ui.find_bar import FindBar
 from app.ui.find_controller import FindController
-from app.ui.log_pane import (
-    LogPane,
-    _fmt,
-    _PANE_STYLE,
-    _PLAIN_COLOR,
-    _DEFAULT_CAP,
-    doc_line_count,
-    make_pane,
-    pane_with_header,
-)
-from app.ui.minimap import Minimap
+from app.ui.log_pane import _fmt
+from app.ui.log_window import LogWindowMixin
 from app.ui.send_bar import SendBar
 from app.ui.serial_panel import SerialPanel
 from app.ui.settings_sidebar import SettingsSidebar
@@ -74,7 +54,7 @@ class _ClickableLabel(QLabel):
         super().mousePressEvent(event)
 
 
-class MainWindow(QMainWindow):
+class MainWindow(LogWindowMixin, QMainWindow):
     _instances: list = []
 
     def __init__(self):
@@ -82,17 +62,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("logulator")
         self.resize(1200, 720)
 
-        self._settings = AppSettings()
-        self._colorizer = Colorizer(self._settings)
-        self._plain_fmt = _fmt(_PLAIN_COLOR)
+        self._init_log_window(AppSettings())
 
         self._worker: Optional[SerialWorker] = None
         self._log_writer = LogWriter()
-        self._rules: list = []
-        self._filter_mode = "OR"
         self._line_count = 0
         self._connect_time: Optional[datetime] = None
-        self._splitter_initialized = False
         self._file_viewers: list = []
         self._auto_reconnect: bool = self._settings.auto_reconnect()
         self._reconnecting: bool = False
@@ -106,31 +81,14 @@ class MainWindow(QMainWindow):
         font.setStyleHint(QFont.StyleHint.Monospace)
         font.setPointSize(self._settings.font_size())
 
-        self._raw_pane = make_pane(font)
-        self._filtered_pane = make_pane(font)
-        self._raw_pane.setPlaceholderText(
-            "Select a port and press Connect — or drop a .log file here."
+        self._build_log_panes(
+            font,
+            cap=self._settings.buffer_cap(),
+            raw_placeholder=(
+                "Select a port and press Connect — or drop a .log file here."
+            ),
+            filtered_placeholder="No lines match the active filters.",
         )
-        self._filtered_pane.setPlaceholderText("No lines match the active filters.")
-
-        # Minimaps: colored-band overview beside each pane, optional (Settings
-        # sidebar), off by default.
-        self._minimap = Minimap()
-        self._minimap.position_clicked.connect(self._on_minimap_clicked)
-        self._filtered_minimap = Minimap()
-        self._filtered_minimap.position_clicked.connect(self._on_filtered_minimap_clicked)
-
-        raw_box, self._raw_header = pane_with_header(self._raw_pane, "Raw", self._minimap)
-        self._filtered_box, self._filtered_header = pane_with_header(
-            self._filtered_pane, "Filtered", self._filtered_minimap
-        )
-        self._filter_bar = FilterBar()
-        self._filtered_box.layout().insertWidget(1, self._filter_bar)
-        self._filtered_box.hide()
-
-        self._splitter = QSplitter(Qt.Orientation.Vertical)
-        self._splitter.addWidget(raw_box)
-        self._splitter.addWidget(self._filtered_box)
 
         self._serial_panel = SerialPanel(self._settings)
         self._send_bar = SendBar(self._settings)
@@ -224,27 +182,9 @@ class MainWindow(QMainWindow):
         self._serial_panel.auto_reconnect_changed.connect(self._on_auto_reconnect_changed)
         self._serial_panel.set_auto_reconnect(self._auto_reconnect)
         self._send_bar.send_requested.connect(self._on_send)
-        self._filter_bar.filters_changed.connect(self._on_filters_changed)
-        self._filter_bar.input_bar_closed.connect(self._on_filter_bar_closed)
-        self._raw_pane.file_dropped.connect(self.open_file)
-        self._filtered_pane.file_dropped.connect(self.open_file)
-        self._raw_pane.selectionChanged.connect(self._on_raw_pane_selection_changed)
-        self._filtered_pane.selectionChanged.connect(self._on_filtered_pane_selection_changed)
-        self._filtered_pane.line_double_clicked.connect(self._jump_to_raw_line)
         self._sidebar.buffer_cap_changed.connect(self._on_buffer_cap_changed)
         self._sidebar.font_size_changed.connect(self._on_font_size_changed)
         self._find_bar.filter_to_matches.connect(self._on_filter_to_matches)
-        self._raw_pane.verticalScrollBar().valueChanged.connect(self._update_minimap_viewport)
-        self._raw_pane.verticalScrollBar().rangeChanged.connect(self._update_minimap_viewport)
-        self._filtered_pane.verticalScrollBar().valueChanged.connect(self._update_filtered_minimap_viewport)
-        self._filtered_pane.verticalScrollBar().rangeChanged.connect(self._update_filtered_minimap_viewport)
-
-        # Apply persisted buffer cap (overrides _DEFAULT_CAP set in LogPane.__init__)
-        initial_cap = self._settings.buffer_cap()
-        self._raw_pane.set_cap(initial_cap)
-        self._filtered_pane.set_cap(initial_cap)
-        self._minimap.set_cap(initial_cap)
-        self._filtered_minimap.set_cap(initial_cap)
 
         # Restore geometry
         geometry = self._settings.load_geometry()
@@ -255,38 +195,11 @@ class MainWindow(QMainWindow):
             self._splitter.restoreState(splitter_state)
             self._splitter_initialized = True
 
-        # Sync filter state from persisted settings (filter bar loads rules in __init__)
+        # Establish the initial (empty) filter state.
         self._on_filters_changed(self._filter_bar.get_rules(), self._filter_bar.get_mode())
         self._apply_minimap_settings()
         self._update_minimap_viewport()
         self._update_filtered_minimap_viewport()
-
-    # ------------------------------------------------------------------
-    # Colorization helpers
-    # ------------------------------------------------------------------
-
-    def _minimap_color_for(self, line: str) -> QColor:
-        if line.startswith(">> "):
-            return QColor(self._settings.tx_color())
-        if line.startswith("---"):
-            return QColor("#555555")
-        level = detect_level(line)
-        if level:
-            return QColor(self._settings.level_color(level))
-        return QColor("#444444")
-
-    def _get_segments(self, line: str, pane: str) -> List[Tuple[str, QTextCharFormat]]:
-        """Return (text, format) segments. pane is 'raw' or 'filtered'."""
-        if not self._settings.color_enabled():
-            return [(line, self._plain_fmt)]
-        apply_to = self._settings.color_apply_to()
-        if apply_to == "none":
-            return [(line, self._plain_fmt)]
-        if apply_to == "raw" and pane != "raw":
-            return [(line, self._plain_fmt)]
-        if apply_to == "filtered" and pane != "filtered":
-            return [(line, self._plain_fmt)]
-        return self._colorizer.colorize(line)
 
     # ------------------------------------------------------------------
     # Serial lifecycle
@@ -449,79 +362,9 @@ class MainWindow(QMainWindow):
             self._filtered_minimap.clear()
             self._update_pane_headers()
 
-    def _ensure_filtered_box_visible(self):
-        if not self._splitter_initialized:
-            self._splitter_initialized = True
-            h = self._splitter.height()
-            if h > 0:
-                self._splitter.setSizes([int(h * 0.6), int(h * 0.4)])
-        self._filtered_box.show()
-
-    def _update_filtered_visibility(self):
-        # The filter bar's input row now lives above the filtered pane, so the
-        # container must stay visible while it's open even before any rule
-        # exists — otherwise there's no way to reach it to add the first rule.
-        show = bool(self._rules) or self._filter_bar.is_input_bar_open()
-        if show:
-            self._ensure_filtered_box_visible()
-        else:
-            self._filtered_box.hide()
-            self._filtered_pane.clear()
-
-    def _rebuild_filtered_pane(self):
-        doc = self._raw_pane.document()
-        block = doc.begin()
-        self._filtered_pane.setUpdatesEnabled(False)
-        self._filtered_pane.clear()
-        while block != doc.end():
-            text = block.text()
-            if filter_engine.match(text, self._rules, self._filter_mode):
-                self._filtered_pane.append_line(self._get_segments(text, "filtered"), scroll=False)
-            block = block.next()
-        self._filtered_pane.setUpdatesEnabled(True)
-        sb = self._filtered_pane.verticalScrollBar()
-        sb.setValue(sb.maximum())
-        self._update_pane_headers()
-        if self._filtered_minimap.isVisible():
-            self._rebuild_filtered_minimap()
-
-    def _rebuild_raw_pane(self):
-        doc = self._raw_pane.document()
-        block = doc.begin()
-        lines = []
-        while block != doc.end():
-            lines.append(block.text())
-            block = block.next()
-        self._raw_pane.setUpdatesEnabled(False)
-        self._raw_pane.clear()
-        for line in lines:
-            self._raw_pane.append_line(self._get_segments(line, "raw"), scroll=False)
-        self._raw_pane.setUpdatesEnabled(True)
-        sb = self._raw_pane.verticalScrollBar()
-        sb.setValue(sb.maximum())
-        if self._minimap.isVisible():
-            self._rebuild_raw_minimap()
-
     # ------------------------------------------------------------------
     # UI controls
     # ------------------------------------------------------------------
-
-    def _jump_to_raw_line(self, line: str) -> None:
-        doc = self._raw_pane.document()
-        block = doc.begin()
-        while block != doc.end():
-            if block.text() == line:
-                cursor = QTextCursor(block)
-                cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
-                cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor)
-                self._raw_pane.setTextCursor(cursor)
-                self._raw_pane.setFocus()
-                self._raw_pane.ensureCursorVisible()
-                rect = self._raw_pane.cursorRect()
-                sb = self._raw_pane.verticalScrollBar()
-                sb.setValue(sb.value() + rect.center().y() - self._raw_pane.viewport().height() // 2)
-                return
-            block = block.next()
 
     def _on_buffer_cap_changed(self, cap: int) -> None:
         self._raw_pane.set_cap(cap)
@@ -537,76 +380,6 @@ class MainWindow(QMainWindow):
             self._filtered_minimap.clear()
         self._line_count = 0
         self._update_pane_headers()
-
-    def _update_minimap_viewport(self, *_args) -> None:
-        sb = self._raw_pane.verticalScrollBar()
-        total = sb.maximum() + sb.pageStep()
-        if total <= 0:
-            self._minimap.set_viewport(0.0, 1.0)
-            return
-        self._minimap.set_viewport(sb.value() / total, (sb.value() + sb.pageStep()) / total)
-
-    def _on_minimap_clicked(self, frac: float) -> None:
-        sb = self._raw_pane.verticalScrollBar()
-        total = sb.maximum() + sb.pageStep()
-        target = int(frac * total - sb.pageStep() / 2)
-        sb.setValue(max(0, min(sb.maximum(), target)))
-
-    def _update_filtered_minimap_viewport(self, *_args) -> None:
-        sb = self._filtered_pane.verticalScrollBar()
-        total = sb.maximum() + sb.pageStep()
-        if total <= 0:
-            self._filtered_minimap.set_viewport(0.0, 1.0)
-            return
-        self._filtered_minimap.set_viewport(sb.value() / total, (sb.value() + sb.pageStep()) / total)
-
-    def _on_filtered_minimap_clicked(self, frac: float) -> None:
-        sb = self._filtered_pane.verticalScrollBar()
-        total = sb.maximum() + sb.pageStep()
-        target = int(frac * total - sb.pageStep() / 2)
-        sb.setValue(max(0, min(sb.maximum(), target)))
-
-    def _rebuild_raw_minimap(self) -> None:
-        doc = self._raw_pane.document()
-        colors = []
-        if not (doc.blockCount() == 1 and doc.firstBlock().text() == ""):
-            block = doc.begin()
-            while block != doc.end():
-                colors.append(self._minimap_color_for(block.text()))
-                block = block.next()
-        self._minimap.set_colors(colors)
-
-    def _rebuild_filtered_minimap(self) -> None:
-        doc = self._filtered_pane.document()
-        colors = []
-        if not (doc.blockCount() == 1 and doc.firstBlock().text() == ""):
-            block = doc.begin()
-            while block != doc.end():
-                colors.append(self._minimap_color_for(block.text()))
-                block = block.next()
-        self._filtered_minimap.set_colors(colors)
-
-    def _apply_minimap_settings(self) -> None:
-        enabled = self._settings.minimap_enabled()
-        apply_to = self._settings.minimap_apply_to()
-        show_raw = enabled and apply_to in ("all", "raw")
-        show_filtered = enabled and apply_to in ("all", "filtered")
-        self._minimap.setVisible(show_raw)
-        self._filtered_minimap.setVisible(show_filtered)
-        if show_raw:
-            self._rebuild_raw_minimap()
-        else:
-            self._minimap.clear()
-        if show_filtered:
-            self._rebuild_filtered_minimap()
-        else:
-            self._filtered_minimap.clear()
-
-    def _update_pane_headers(self):
-        if self._filtered_box.isVisible():
-            n = doc_line_count(self._filtered_pane)
-            m = doc_line_count(self._raw_pane)
-            self._filtered_header.setText(f"Filtered — {n:,} of {m:,} lines")
 
     def _on_filter_to_matches(self, text: str) -> None:
         self._filter_bar.add_rule(text, "substring", "include")
@@ -624,55 +397,9 @@ class MainWindow(QMainWindow):
         if path and path.exists():
             _reveal_in_file_manager(path)
 
-    def _on_settings_changed(self):
-        self._rebuild_raw_pane()
-        if self._filtered_pane.isVisible():
-            self._rebuild_filtered_pane()
-        self._apply_minimap_settings()
-
-    def _on_theme_changed(self, theme: str):
-        apply_palette(QApplication.instance(), theme)
-
-    def _on_filter_action_toggled(self, checked: bool):
-        if checked:
-            # Show the container before opening the row so it can take focus.
-            self._ensure_filtered_box_visible()
-        if checked != self._filter_bar.is_input_bar_open():
-            self._filter_bar.toggle_input_bar()
-        if not checked:
-            self._update_filtered_visibility()
-
-    def _on_filter_bar_closed(self):
-        self._filter_action.blockSignals(True)
-        self._filter_action.setChecked(False)
-        self._filter_action.blockSignals(False)
-        self._update_filtered_visibility()
-
     def _on_sidebar_toggle(self, checked: bool):
         self._sidebar.setVisible(checked)
         self._settings.set_sidebar_open(checked)
-
-    def _on_raw_pane_selection_changed(self):
-        cursor = self._filtered_pane.textCursor()
-        if cursor.hasSelection():
-            self._filtered_pane.blockSignals(True)
-            cursor.clearSelection()
-            self._filtered_pane.setTextCursor(cursor)
-            self._filtered_pane.blockSignals(False)
-
-    def _on_filtered_pane_selection_changed(self):
-        cursor = self._raw_pane.textCursor()
-        if cursor.hasSelection():
-            self._raw_pane.blockSignals(True)
-            cursor.clearSelection()
-            self._raw_pane.setTextCursor(cursor)
-            self._raw_pane.blockSignals(False)
-
-    def _on_font_size_changed(self, size: int):
-        for pane in (self._raw_pane, self._filtered_pane):
-            f = pane.font()
-            f.setPointSize(size)
-            pane.setFont(f)
 
     def _update_status_bar(self):
         if self._connect_time is None:
@@ -757,5 +484,3 @@ class MainWindow(QMainWindow):
         if self in MainWindow._instances:
             MainWindow._instances.remove(self)
         super().closeEvent(event)
-
-

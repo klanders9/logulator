@@ -1,55 +1,37 @@
 # Copyright (c) 2026 Kevin Landers. SPDX-License-Identifier: MIT
-"""Standalone log file viewer window. Supports lazy/chunked loading, the same
-compact filter bar as the main window (Phase 2a), and an inline find bar (Phase 2b)."""
+"""Standalone log file viewer window.
+
+Adds chunked background loading, tail/follow mode and an inline find bar on top
+of the shared pane/filter/minimap behaviour in `LogWindowMixin`."""
 
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Optional
 
-from PySide6.QtCore import Qt, QFileSystemWatcher, Signal
-from PySide6.QtGui import (
-    QAction,
-    QColor,
-    QFont,
-    QKeySequence,
-    QTextCharFormat,
-    QTextCursor,
-)
+from PySide6.QtCore import QFileSystemWatcher, Signal
+from PySide6.QtGui import QAction, QFont, QKeySequence
 from PySide6.QtWidgets import (
-    QApplication,
     QDialog,
     QFileDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
-    QSplitter,
     QVBoxLayout,
     QWidget,
 )
 
 from app import filter_engine
-from app.colorizer import Colorizer, detect_level
 from app.settings import AppSettings
-from app.ui.filter_bar import FilterBar
 from app.ui.find_bar import FindBar
 from app.ui.find_controller import FindController
 from app.ui.file_loader import FileLoaderWorker
-from app.ui.log_pane import (
-    LogPane,
-    _fmt,
-    _PANE_STYLE,
-    _PLAIN_COLOR,
-    doc_line_count,
-    make_pane,
-    pane_with_header,
-)
-from app.ui.minimap import Minimap
+from app.ui.log_window import LogWindowMixin
 
 # File viewers don't enforce a display cap — file content is finite and static.
 # Set a generous cap to prevent runaway memory for pathological files.
 _FILE_PANE_CAP = 2_000_000
 
 
-class FileViewer(QMainWindow):
+class FileViewer(LogWindowMixin, QMainWindow):
     """Independent file viewer window. Multiple instances may coexist."""
 
     _instances: list = []
@@ -58,15 +40,10 @@ class FileViewer(QMainWindow):
 
     def __init__(self, settings: AppSettings, path: Path, parent=None):
         super().__init__(parent)
-        self._settings = settings
-        self._colorizer = Colorizer(settings)
-        self._plain_fmt = _fmt(_PLAIN_COLOR)
+        self._init_log_window(settings)
         self._path = path
-        self._rules: list = []
-        self._filter_mode = "OR"
         self._total_lines = 0
         self._loading = False
-        self._splitter_initialized = False
         self._worker: Optional[FileLoaderWorker] = None
 
         # Tail/follow state
@@ -89,30 +66,8 @@ class FileViewer(QMainWindow):
         font.setStyleHint(QFont.StyleHint.Monospace)
         font.setPointSize(settings.font_size())
 
-        # ---- Panes ----
-        self._raw_pane = make_pane(font, cap=_FILE_PANE_CAP)
-        self._filtered_pane = make_pane(font, cap=_FILE_PANE_CAP)
-
-        # ---- Minimaps: colored-band overview, optional (Settings), off by default ----
-        self._minimap = Minimap()
-        self._minimap.set_cap(_FILE_PANE_CAP)
-        self._minimap.position_clicked.connect(self._on_minimap_clicked)
-        self._filtered_minimap = Minimap()
-        self._filtered_minimap.set_cap(_FILE_PANE_CAP)
-        self._filtered_minimap.position_clicked.connect(self._on_filtered_minimap_clicked)
-
-        raw_box, self._raw_header = pane_with_header(self._raw_pane, "Raw", self._minimap)
-        self._filtered_box, self._filtered_header = pane_with_header(
-            self._filtered_pane, "Filtered", self._filtered_minimap
-        )
-        # ---- Filter bar (no settings persistence for file viewers) ----
-        self._filter_bar = FilterBar(settings=None, parent=None)
-        self._filtered_box.layout().insertWidget(1, self._filter_bar)
-        self._filtered_box.hide()
-
-        self._splitter = QSplitter(Qt.Orientation.Vertical)
-        self._splitter.addWidget(raw_box)
-        self._splitter.addWidget(self._filtered_box)
+        # ---- Panes, minimaps, filter bar and splitter ----
+        self._build_log_panes(font, cap=_FILE_PANE_CAP)
 
         # ---- Find bar ----
         self._find_bar = FindBar()
@@ -168,22 +123,10 @@ class FileViewer(QMainWindow):
         self._status_label = QLabel("Loading…")
         self.statusBar().addWidget(self._status_label)
 
-        # ---- Signal wiring ----
-        self._filter_bar.filters_changed.connect(self._on_filters_changed)
-        self._filter_bar.input_bar_closed.connect(self._on_filter_bar_closed)
-        self._raw_pane.selectionChanged.connect(self._on_raw_selection_changed)
-        self._filtered_pane.selectionChanged.connect(self._on_filtered_selection_changed)
-        self._filtered_pane.line_double_clicked.connect(self._jump_to_raw_line)
-        self._raw_pane.file_dropped.connect(self.open_file)
-        self._filtered_pane.file_dropped.connect(self.open_file)
-
+        # ---- Signal wiring (pane/filter/minimap wiring is in the mixin) ----
         self._find_bar.filter_to_matches.connect(self._on_filter_to_matches)
-
+        # Follow mode pauses when the user scrolls away from the bottom.
         self._raw_pane.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
-        self._raw_pane.verticalScrollBar().valueChanged.connect(self._update_minimap_viewport)
-        self._raw_pane.verticalScrollBar().rangeChanged.connect(self._update_minimap_viewport)
-        self._filtered_pane.verticalScrollBar().valueChanged.connect(self._update_filtered_minimap_viewport)
-        self._filtered_pane.verticalScrollBar().rangeChanged.connect(self._update_filtered_minimap_viewport)
 
         self._apply_minimap_settings()
 
@@ -254,32 +197,8 @@ class FileViewer(QMainWindow):
         )
         self._update_pane_headers()
 
-    def _update_pane_headers(self) -> None:
-        if self._filtered_box.isVisible():
-            n = doc_line_count(self._filtered_pane)
-            m = doc_line_count(self._raw_pane)
-            self._filtered_header.setText(f"Filtered — {n:,} of {m:,} lines")
-
     # ------------------------------------------------------------------
-    # Colorization
-    # ------------------------------------------------------------------
-
-    def _get_segments(
-        self, line: str, pane: str
-    ) -> List[Tuple[str, QTextCharFormat]]:
-        if not self._settings.color_enabled():
-            return [(line, self._plain_fmt)]
-        apply_to = self._settings.color_apply_to()
-        if apply_to == "none":
-            return [(line, self._plain_fmt)]
-        if apply_to == "raw" and pane != "raw":
-            return [(line, self._plain_fmt)]
-        if apply_to == "filtered" and pane != "filtered":
-            return [(line, self._plain_fmt)]
-        return self._colorizer.colorize(line)
-
-    # ------------------------------------------------------------------
-    # Filters (Phase 2a)
+    # Filters
     # ------------------------------------------------------------------
 
     def _on_filters_changed(self, rules: list, mode: str) -> None:
@@ -297,108 +216,11 @@ class FileViewer(QMainWindow):
             self._filtered_minimap.clear()
             self._update_pane_headers()
 
-    def _ensure_filtered_box_visible(self) -> None:
-        if not self._splitter_initialized:
-            self._splitter_initialized = True
-            h = self._splitter.height()
-            if h > 0:
-                self._splitter.setSizes([int(h * 0.6), int(h * 0.4)])
-        self._filtered_box.show()
-
-    def _update_filtered_visibility(self) -> None:
-        # The filter bar's input row now lives above the filtered pane, so the
-        # container must stay visible while it's open even before any rule
-        # exists — otherwise there's no way to reach it to add the first rule.
-        show = bool(self._rules) or self._filter_bar.is_input_bar_open()
-        if show:
-            self._ensure_filtered_box_visible()
-        else:
-            self._filtered_box.hide()
-            self._filtered_pane.clear()
-
-    def _rebuild_filtered_pane(self) -> None:
-        doc = self._raw_pane.document()
-        block = doc.begin()
-        self._filtered_pane.setUpdatesEnabled(False)
-        self._filtered_pane.clear()
-        while block != doc.end():
-            text = block.text()
-            if filter_engine.match(text, self._rules, self._filter_mode):
-                self._filtered_pane.append_line(
-                    self._get_segments(text, "filtered"), scroll=False
-                )
-            block = block.next()
-        self._filtered_pane.setUpdatesEnabled(True)
-        sb = self._filtered_pane.verticalScrollBar()
-        sb.setValue(sb.maximum())
-        self._update_pane_headers()
-        if self._filtered_minimap.isVisible():
-            self._rebuild_filtered_minimap()
-
-    def _on_filter_action_toggled(self, checked: bool) -> None:
-        if checked:
-            # Show the container before opening the row so it can take focus.
-            self._ensure_filtered_box_visible()
-        if checked != self._filter_bar.is_input_bar_open():
-            self._filter_bar.toggle_input_bar()
-        if not checked:
-            self._update_filtered_visibility()
-
-    def _on_filter_bar_closed(self) -> None:
-        self._filter_action.blockSignals(True)
-        self._filter_action.setChecked(False)
-        self._filter_action.blockSignals(False)
-        self._update_filtered_visibility()
-
     def _on_filter_to_matches(self, text: str) -> None:
         self._filter_bar.add_rule(text, "substring", "include")
         # Open the chip strip if not visible (filter bar shows chips automatically)
         if not self._filter_bar.is_input_bar_open():
             self._filter_action.setChecked(True)
-
-    # ------------------------------------------------------------------
-    # Selection mutual exclusion
-    # ------------------------------------------------------------------
-
-    def _on_raw_selection_changed(self) -> None:
-        cursor = self._filtered_pane.textCursor()
-        if cursor.hasSelection():
-            self._filtered_pane.blockSignals(True)
-            cursor.clearSelection()
-            self._filtered_pane.setTextCursor(cursor)
-            self._filtered_pane.blockSignals(False)
-
-    def _on_filtered_selection_changed(self) -> None:
-        cursor = self._raw_pane.textCursor()
-        if cursor.hasSelection():
-            self._raw_pane.blockSignals(True)
-            cursor.clearSelection()
-            self._raw_pane.setTextCursor(cursor)
-            self._raw_pane.blockSignals(False)
-
-    def _jump_to_raw_line(self, line: str) -> None:
-        doc = self._raw_pane.document()
-        block = doc.begin()
-        while block != doc.end():
-            if block.text() == line:
-                cursor = QTextCursor(block)
-                cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
-                cursor.movePosition(
-                    QTextCursor.MoveOperation.EndOfBlock,
-                    QTextCursor.MoveMode.KeepAnchor,
-                )
-                self._raw_pane.setTextCursor(cursor)
-                self._raw_pane.setFocus()
-                self._raw_pane.ensureCursorVisible()
-                rect = self._raw_pane.cursorRect()
-                sb = self._raw_pane.verticalScrollBar()
-                sb.setValue(
-                    sb.value()
-                    + rect.center().y()
-                    - self._raw_pane.viewport().height() // 2
-                )
-                return
-            block = block.next()
 
     # ------------------------------------------------------------------
     # Tail / follow mode
@@ -527,117 +349,6 @@ class FileViewer(QMainWindow):
         self._settings_dialog.show()
         self._settings_dialog.raise_()
         self._settings_dialog.activateWindow()
-
-    def _on_settings_changed(self) -> None:
-        self._rebuild_raw_pane()
-        if self._filtered_pane.isVisible():
-            self._rebuild_filtered_pane()
-        self._apply_minimap_settings()
-
-    def _on_theme_changed(self, theme: str) -> None:
-        from app.theme import apply_palette
-        apply_palette(QApplication.instance(), theme)
-
-    def _on_font_size_changed(self, size: int) -> None:
-        for pane in (self._raw_pane, self._filtered_pane):
-            f = pane.font()
-            f.setPointSize(size)
-            pane.setFont(f)
-
-    def _rebuild_raw_pane(self) -> None:
-        doc = self._raw_pane.document()
-        block = doc.begin()
-        lines = []
-        while block != doc.end():
-            lines.append(block.text())
-            block = block.next()
-        self._raw_pane.setUpdatesEnabled(False)
-        self._raw_pane.clear()
-        for line in lines:
-            self._raw_pane.append_line(self._get_segments(line, "raw"), scroll=False)
-        self._raw_pane.setUpdatesEnabled(True)
-        sb = self._raw_pane.verticalScrollBar()
-        sb.setValue(sb.maximum())
-        if self._minimap.isVisible():
-            self._rebuild_raw_minimap()
-
-    # ------------------------------------------------------------------
-    # Minimap
-    # ------------------------------------------------------------------
-
-    def _minimap_color_for(self, line: str) -> QColor:
-        if line.startswith(">> "):
-            return QColor(self._settings.tx_color())
-        if line.startswith("---"):
-            return QColor("#555555")
-        level = detect_level(line)
-        if level:
-            return QColor(self._settings.level_color(level))
-        return QColor("#444444")
-
-    def _rebuild_raw_minimap(self) -> None:
-        doc = self._raw_pane.document()
-        colors = []
-        if not (doc.blockCount() == 1 and doc.firstBlock().text() == ""):
-            block = doc.begin()
-            while block != doc.end():
-                colors.append(self._minimap_color_for(block.text()))
-                block = block.next()
-        self._minimap.set_colors(colors)
-
-    def _rebuild_filtered_minimap(self) -> None:
-        doc = self._filtered_pane.document()
-        colors = []
-        if not (doc.blockCount() == 1 and doc.firstBlock().text() == ""):
-            block = doc.begin()
-            while block != doc.end():
-                colors.append(self._minimap_color_for(block.text()))
-                block = block.next()
-        self._filtered_minimap.set_colors(colors)
-
-    def _apply_minimap_settings(self) -> None:
-        enabled = self._settings.minimap_enabled()
-        apply_to = self._settings.minimap_apply_to()
-        show_raw = enabled and apply_to in ("all", "raw")
-        show_filtered = enabled and apply_to in ("all", "filtered")
-        self._minimap.setVisible(show_raw)
-        self._filtered_minimap.setVisible(show_filtered)
-        if show_raw:
-            self._rebuild_raw_minimap()
-        else:
-            self._minimap.clear()
-        if show_filtered:
-            self._rebuild_filtered_minimap()
-        else:
-            self._filtered_minimap.clear()
-
-    def _update_minimap_viewport(self, *_args) -> None:
-        sb = self._raw_pane.verticalScrollBar()
-        total = sb.maximum() + sb.pageStep()
-        if total <= 0:
-            self._minimap.set_viewport(0.0, 1.0)
-            return
-        self._minimap.set_viewport(sb.value() / total, (sb.value() + sb.pageStep()) / total)
-
-    def _on_minimap_clicked(self, frac: float) -> None:
-        sb = self._raw_pane.verticalScrollBar()
-        total = sb.maximum() + sb.pageStep()
-        target = int(frac * total - sb.pageStep() / 2)
-        sb.setValue(max(0, min(sb.maximum(), target)))
-
-    def _update_filtered_minimap_viewport(self, *_args) -> None:
-        sb = self._filtered_pane.verticalScrollBar()
-        total = sb.maximum() + sb.pageStep()
-        if total <= 0:
-            self._filtered_minimap.set_viewport(0.0, 1.0)
-            return
-        self._filtered_minimap.set_viewport(sb.value() / total, (sb.value() + sb.pageStep()) / total)
-
-    def _on_filtered_minimap_clicked(self, frac: float) -> None:
-        sb = self._filtered_pane.verticalScrollBar()
-        total = sb.maximum() + sb.pageStep()
-        target = int(frac * total - sb.pageStep() / 2)
-        sb.setValue(max(0, min(sb.maximum(), target)))
 
     # ------------------------------------------------------------------
     # Lifecycle

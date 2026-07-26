@@ -7,8 +7,15 @@ from app.ui.filter_bar import FilterBar, _RuleChip, _chip_label_text
 
 
 @pytest.fixture
-def bar(qapp):
-    return FilterBar()
+def bar(qtbot):
+    # Registered with qtbot so the widget's lifetime is deterministic.
+    # _rebuild_chips retires chips with deleteLater(), and those deferred
+    # deletions must not outlive the FilterBar that parents them — if Python
+    # collects the bar first, the queued deletion fires against a freed parent
+    # in whatever nested event loop runs next.
+    bar = FilterBar()
+    qtbot.addWidget(bar)
+    return bar
 
 
 def chips(bar):
@@ -165,16 +172,22 @@ class TestInputBar:
         with qtbot.waitSignal(bar.input_bar_closed):
             bar.toggle_input_bar()
 
-    def test_open_state_survives_a_hidden_ancestor(self, bar, qapp):
+    def test_open_state_survives_a_hidden_ancestor(self, qtbot):
         """is_input_bar_open() tracks an explicit flag, not composed visibility.
 
         The bar lives inside the filtered pane container, which is itself
         hidden until a rule exists, so Qt would report the row as not visible
         while it is logically open.
+
+        Builds its own bar rather than taking the fixture: the host owns the
+        bar once it is added to the layout, so registering both with qtbot
+        would double-free at teardown.
         """
         from PySide6.QtWidgets import QWidget, QVBoxLayout
 
         host = QWidget()
+        qtbot.addWidget(host)
+        bar = FilterBar()
         QVBoxLayout(host).addWidget(bar)
         host.hide()
         bar.toggle_input_bar()
