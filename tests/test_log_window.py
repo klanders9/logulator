@@ -303,6 +303,12 @@ class _StubWorker:
     error_occurred = _Sig()
     connected = _Sig()
 
+    def __init__(self):
+        self.sent = []
+
+    def send(self, data):
+        self.sent.append(data)
+
     def start(self):
         pass
 
@@ -392,3 +398,46 @@ class TestSettingsReachEveryWindow:
         assert other not in open_log_windows()
         # Must not raise against the closed window.
         win._on_settings_changed()
+
+
+class TestControlCharacterTx:
+    """Ctrl+C must reach the port as a bare 0x03, and stay readable in the log."""
+
+    def test_control_byte_reaches_the_worker(self, win, monkeypatch, tmp_path):
+        from app import main_window as mw
+
+        sent = []
+
+        class Worker(_StubWorker):
+            def send(self, data):
+                sent.append(data)
+
+        win._settings.set_log_dir(str(tmp_path / "logs"))
+        monkeypatch.setattr(mw, "SerialWorker", lambda *a, **k: Worker())
+        win._on_connect("/dev/nonexistent", 115200)
+        try:
+            win._on_control(b"\x03", "^C")
+            assert sent == [b"\x03"], "no line ending may be appended"
+        finally:
+            win._on_disconnect(prompt_clear=False)
+
+    def test_control_byte_is_echoed_in_caret_notation(self, win, monkeypatch, tmp_path):
+        from app import main_window as mw
+
+        win._settings.set_log_dir(str(tmp_path / "logs"))
+        monkeypatch.setattr(mw, "SerialWorker", lambda *a, **k: _StubWorker())
+        win._on_connect("/dev/nonexistent", 115200)
+        try:
+            log_path = win._log_writer.current_path
+            win._on_control(b"\x03", "^C")
+            assert raw_texts(win)[-1] == ">> ^C"
+        finally:
+            win._on_disconnect(prompt_clear=False)
+        # The saved log shows the mnemonic, not an invisible raw byte.
+        assert log_path.read_bytes() == b">> ^C\n"
+
+    def test_control_byte_is_ignored_while_disconnected(self, win):
+        """Worker is briefly None during an auto-reconnect gap."""
+        assert win._worker is None
+        win._on_control(b"\x03", "^C")  # must not raise
+        assert doc_line_count(win._raw_pane) == 0

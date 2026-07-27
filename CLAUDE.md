@@ -296,6 +296,23 @@ connect. Module also exports `config_summary(settings) -> str` (`"8-N-1"`)
 and `config_tooltip(settings) -> str` used by `SerialPanel`'s button.
 
 ### `app/ui/send_bar.py` — `SendBar(QWidget)`
+Control keys pass straight through to the port: `Ctrl+A`–`Ctrl+Z` send
+`0x01`–`0x1A`, `Escape` sends `0x1B`, plus `Ctrl+[`/`\`/`]`/`Space`. They go
+out **immediately and without the line ending** — an interrupt is the byte on
+its own, and must not wait for Enter. Emitted as
+`control_requested(bytes, mnemonic)`; `MainWindow._on_control` sends the byte
+and records it as `>> ^C` in caret notation, since a raw `0x03` would be
+invisible in the pane and in the saved log.
+
+`_CTRL_MOD` picks the modifier that means *physical Control*: Qt maps
+`ControlModifier` to Command on macOS and `MetaModifier` to the real Control
+key, so the platforms need opposite values. A happy consequence on macOS is
+that control characters never collide with the app's Cmd-based shortcuts.
+Elsewhere they can, so `_HistoryLineEdit.event()` claims the
+`ShortcutOverride` — window-level `QAction` shortcuts are resolved before a
+key reaches `keyPressEvent`, so `Ctrl+F` would otherwise open the find bar
+instead of sending `^F`.
+
 Input row for transmitting characters out the serial port, docked below the
 display panes in `MainWindow`. `Send:` label, `_HistoryLineEdit` (Enter sends;
 Up/Down recall previously sent lines, shell-style, in-memory only, capped at

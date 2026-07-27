@@ -187,6 +187,7 @@ class MainWindow(LogWindowMixin, QMainWindow):
         self._serial_panel.auto_reconnect_changed.connect(self._on_auto_reconnect_changed)
         self._serial_panel.set_auto_reconnect(self._auto_reconnect)
         self._send_bar.send_requested.connect(self._on_send)
+        self._send_bar.control_requested.connect(self._on_control)
         self._sidebar.buffer_cap_changed.connect(self._on_buffer_cap_changed)
         self._sidebar.font_size_changed.connect(self._on_font_size_changed)
         self._find_bar.filter_to_matches.connect(self._on_filter_to_matches)
@@ -342,8 +343,23 @@ class MainWindow(LogWindowMixin, QMainWindow):
         if self._worker is None:
             return
         self._worker.send((text + ending).encode("utf-8"))
-        # Record TX in the session log with a '>> ' marker so the file
-        # captures both directions of the conversation.
+        self._record_tx(text)
+
+    def _on_control(self, data: bytes, mnemonic: str):
+        """Send a raw control byte, e.g. ^C to interrupt the target.
+
+        No line ending: an interrupt is the byte on its own.
+        """
+        if self._worker is None:
+            return
+        self._worker.send(data)
+        # Logged and echoed in caret notation rather than as the raw byte,
+        # which would be invisible in the pane and in the saved log.
+        self._record_tx(mnemonic)
+
+    def _record_tx(self, text: str) -> None:
+        """Log and echo one transmitted line with the '>> ' marker, so the
+        session file captures both directions of the conversation."""
         self._log_writer.write_tx_line(text)
         echo = ">> " + text
         self._raw_pane.append_line(self._get_segments(echo, "raw"))
