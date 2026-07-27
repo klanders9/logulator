@@ -441,3 +441,71 @@ class TestControlCharacterTx:
         assert win._worker is None
         win._on_control(b"\x03", "^C")  # must not raise
         assert doc_line_count(win._raw_pane) == 0
+
+
+class TestEmptySendEcho:
+    """A bare Enter must always transmit; only the echo is configurable."""
+
+    def _connect(self, win, monkeypatch, tmp_path):
+        from app import main_window as mw
+
+        worker = _StubWorker()
+        win._settings.set_log_dir(str(tmp_path / "logs"))
+        monkeypatch.setattr(mw, "SerialWorker", lambda *a, **k: worker)
+        win._on_connect("/dev/nonexistent", 115200)
+        return worker
+
+    def test_line_ending_is_sent_even_when_not_echoed(self, win, monkeypatch, tmp_path):
+        worker = self._connect(win, monkeypatch, tmp_path)
+        try:
+            win._on_send("", "\r\n")
+            assert worker.sent == [b"\r\n"], "the nudge must still reach the target"
+        finally:
+            win._on_disconnect(prompt_clear=False)
+
+    def test_blank_send_is_not_echoed_by_default(self, win, monkeypatch, tmp_path):
+        self._connect(win, monkeypatch, tmp_path)
+        try:
+            log_path = win._log_writer.current_path
+            win._on_send("", "\r\n")
+            assert doc_line_count(win._raw_pane) == 0
+        finally:
+            win._on_disconnect(prompt_clear=False)
+        assert log_path.read_bytes() == b""
+
+    def test_blank_send_is_echoed_when_enabled(self, win, monkeypatch, tmp_path):
+        self._connect(win, monkeypatch, tmp_path)
+        win._settings.set_tx_echo_empty(True)
+        try:
+            log_path = win._log_writer.current_path
+            win._on_send("", "\r\n")
+            assert raw_texts(win) == [">> "]
+        finally:
+            win._on_disconnect(prompt_clear=False)
+        assert log_path.read_bytes() == b">> \n"
+
+    def test_real_commands_are_always_echoed(self, win, monkeypatch, tmp_path):
+        self._connect(win, monkeypatch, tmp_path)
+        try:
+            win._on_send("help", "\r\n")
+            assert raw_texts(win) == [">> help"]
+        finally:
+            win._on_disconnect(prompt_clear=False)
+
+    def test_whitespace_only_send_still_counts_as_content(self, win, monkeypatch, tmp_path):
+        """A space is a deliberate keystroke, not a reflexive Enter."""
+        self._connect(win, monkeypatch, tmp_path)
+        try:
+            win._on_send(" ", "\r\n")
+            assert raw_texts(win) == [">>  "]
+        finally:
+            win._on_disconnect(prompt_clear=False)
+
+    def test_control_bytes_are_echoed_regardless(self, win, monkeypatch, tmp_path):
+        """^C is never blank, so the setting must not suppress it."""
+        self._connect(win, monkeypatch, tmp_path)
+        try:
+            win._on_control(b"\x03", "^C")
+            assert raw_texts(win) == [">> ^C"]
+        finally:
+            win._on_disconnect(prompt_clear=False)

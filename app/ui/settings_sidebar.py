@@ -130,6 +130,15 @@ class SettingsSidebar(QWidget):
             lambda c: self._s.set_tx_color(c),
         ))
 
+        self._echo_empty_cb = QCheckBox("Echo blank sends")
+        self._echo_empty_cb.setChecked(settings.tx_echo_empty())
+        self._echo_empty_cb.setToolTip(
+            "Show a '>> ' line when you press Enter on an empty send field.\n"
+            "The line ending is transmitted either way."
+        )
+        self._echo_empty_cb.toggled.connect(self._s.set_tx_echo_empty)
+        layout.addWidget(self._echo_empty_cb)
+
         layout.addWidget(self._subsection_label("Minimap"))
         self._minimap_cb = QCheckBox("Show minimap")
         self._minimap_cb.setChecked(settings.minimap_enabled())

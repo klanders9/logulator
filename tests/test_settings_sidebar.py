@@ -102,3 +102,26 @@ class TestOtherControls:
         with qtbot.waitSignal(sidebar.settings_changed):
             sidebar._minimap_cb.setChecked(True)
         assert settings.minimap_enabled() is True
+
+
+class TestEchoBlankSends:
+    def test_unchecked_by_default(self, sidebar, settings):
+        assert sidebar._echo_empty_cb.isChecked() is False
+        assert settings.tx_echo_empty() is False
+
+    def test_toggle_persists(self, sidebar, settings):
+        sidebar._echo_empty_cb.setChecked(True)
+        assert settings.tx_echo_empty() is True
+
+    def test_reflects_the_stored_value(self, qtbot, settings):
+        settings.set_tx_echo_empty(True)
+        w = SettingsSidebar(settings)
+        qtbot.addWidget(w)
+        assert w._echo_empty_cb.isChecked() is True
+
+    def test_does_not_trigger_a_pane_rebuild(self, sidebar, qtbot):
+        """MainWindow reads the flag per send, so no rebuild is needed."""
+        fired = []
+        sidebar.settings_changed.connect(lambda: fired.append(1))
+        sidebar._echo_empty_cb.setChecked(True)
+        assert fired == []

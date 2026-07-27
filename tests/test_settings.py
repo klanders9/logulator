@@ -142,3 +142,14 @@ class TestLogDir:
 
         settings.set_log_dir("   ")
         assert settings.log_dir() == str(Path.home() / "logs")
+
+
+class TestTxEchoEmpty:
+    def test_off_by_default(self, settings):
+        assert settings.tx_echo_empty() is False
+
+    def test_roundtrip(self, settings):
+        settings.set_tx_echo_empty(True)
+        assert settings.tx_echo_empty() is True
+        settings.set_tx_echo_empty(False)
+        assert settings.tx_echo_empty() is False

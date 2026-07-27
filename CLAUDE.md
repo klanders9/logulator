@@ -365,7 +365,15 @@ connect): `serial_databits()` (5–8, default 8), `serial_parity()`
 
 TX (send): `tx_line_ending()` (`'none'/'lf'/'cr'/'crlf'`, default `'crlf'`,
 stored under `tx/line_ending`); `tx_color()` / `set_tx_color()` (default
-`#8be9fd`, stored under `color/tx`).
+`#8be9fd`, stored under `color/tx`); `tx_echo_empty()` /
+`set_tx_echo_empty()` (bool, default `False`, stored under `tx/echo_empty`).
+
+`tx_echo_empty` controls only whether a bare Enter is echoed and logged — the
+line ending is transmitted either way, so the prompt-nudge still works. Off by
+default because an empty `>> ` marker carries no information, and the send
+field takes focus on connect, so reflexive Enters would litter the pane and
+the session log. `MainWindow._on_send` reads it per send, so no pane rebuild
+or broadcast is needed on change.
 
 Last-used connection: `last_port()` / `set_last_port()` (str, default `""`),
 `last_baud()` / `set_last_baud()` (int, default 115200) — stored under
@@ -746,6 +754,10 @@ the active rules). Echoes are not counted in `_line_count` (RX lines only).
 `_serial_options()` builds the worker options dict from `AppSettings`; it is
 captured at connect time into `_reconnect_options` so auto-reconnect reuses
 the same configuration.
+
+`_record_tx(text)` is the shared log-and-echo path for both `_on_send` and
+`_on_control`. An empty send skips it unless `AppSettings.tx_echo_empty()` is
+set; a control byte never does, since its mnemonic is never blank.
 
 **Lifecycle:** `_on_connect` opens a new log session, resets line count and
 connect time, starts the worker and the status timer, enables the send bar. `_on_disconnect(prompt_clear)`

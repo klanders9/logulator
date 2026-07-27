@@ -263,6 +263,20 @@ class AppSettings:
         if val in ("none", "lf", "cr", "crlf"):
             self._qs.setValue("tx/line_ending", val)
 
+    def tx_echo_empty(self) -> bool:
+        """Whether a bare Enter (empty send field) is echoed and logged.
+
+        The line ending is transmitted either way — this only controls whether
+        the resulting empty '>> ' marker appears in the pane and the session
+        log. Off by default: an empty marker reads as a glitch rather than an
+        event, and the send field takes focus on connect, so reflexive Enters
+        are common.
+        """
+        return self._qs.value("tx/echo_empty", False, type=bool)
+
+    def set_tx_echo_empty(self, val: bool) -> None:
+        self._qs.setValue("tx/echo_empty", val)
+
     def tx_color(self) -> str:
         return self._qs.value("color/tx", self._TX_DEFAULT)
 

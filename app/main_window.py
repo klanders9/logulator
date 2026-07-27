@@ -343,7 +343,11 @@ class MainWindow(LogWindowMixin, QMainWindow):
         if self._worker is None:
             return
         self._worker.send((text + ending).encode("utf-8"))
-        self._record_tx(text)
+        # A bare Enter still nudges the target, but by default it leaves no
+        # trace: an empty '>> ' marker carries no information and the send
+        # field holds focus, so stray Enters would litter the pane and log.
+        if text or self._settings.tx_echo_empty():
+            self._record_tx(text)
 
     def _on_control(self, data: bytes, mnemonic: str):
         """Send a raw control byte, e.g. ^C to interrupt the target.
