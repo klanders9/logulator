@@ -20,7 +20,8 @@ class TestStrip:
             "[00:00:01.234,567] <err> modem: init failed: -5"
         )
 
-    def test_removes_cursor_control(self):
+    def test_acts_on_cursor_control(self):
+        """2J clears, H homes the cursor, K erases to end of line."""
         assert ansi.strip("\x1b[2J\x1b[Huart:~$ \x1b[Kversion") == "uart:~$ version"
 
     def test_removes_osc_title(self):
@@ -30,7 +31,7 @@ class TestStrip:
         assert ansi.strip("\x1b(Bplain") == "plain"
 
     def test_removes_stray_control_bytes(self):
-        assert ansi.strip("a\x08b\x07c\x7f") == "abc"
+        assert ansi.strip("a\x07b\x00c\x7f") == "abc"
 
     def test_keeps_tabs(self):
         """A tab is content in a log line, not terminal chatter."""
@@ -169,3 +170,76 @@ class TestDownstreamParsersRecover:
     def test_level_detection_already_worked(self):
         """detect_level searches rather than anchors, so it was never broken."""
         assert detect_level(ZEPHYR_WRAPPED) == "err"
+
+
+class TestLineRendering:
+    """parse() is a one-line terminal, not an escape filter.
+
+    The Zephyr shell wipes its prompt before printing each log message. Simply
+    deleting the erase and the carriage return left the prompt cemented onto
+    the front of every log line during boot.
+    """
+
+    LOG = "[00:00:00.200,000] <inf> foo: booting"
+
+    def test_erase_line_then_cr_drops_the_prompt(self):
+        assert ansi.strip("uart:~$ \x1b[2K\r" + self.LOG) == self.LOG
+
+    def test_cr_then_erase_to_end_drops_it_too(self):
+        """Same intent, opposite order — both appear in the wild."""
+        assert ansi.strip("uart:~$ \r\x1b[K" + self.LOG) == self.LOG
+
+    def test_overwriting_with_spaces_drops_it(self):
+        """A shell with no erase capability blanks the prompt by hand."""
+        assert ansi.strip("uart:~$ \r        \r" + self.LOG) == self.LOG
+
+    def test_colour_survives_the_wipe(self):
+        text, spans = ansi.parse("uart:~$ \x1b[2K\r\x1b[1;31m" + self.LOG + "\x1b[0m")
+        assert text == self.LOG
+        assert spans[0][:2] == (0, len(self.LOG))
+        assert spans[0][2].color == "#ff5555"
+
+    def test_a_prompt_with_nothing_after_it_survives(self):
+        """Nothing erased it, so it is still what the terminal shows."""
+        assert ansi.strip("\x1b[1;32muart:~$ \x1b[m") == "uart:~$ "
+
+    def test_carriage_return_overwrites_from_column_zero(self):
+        assert ansi.strip("loading 10%\rloading 99%") == "loading 99%"
+
+    def test_a_shorter_overwrite_leaves_the_tail(self):
+        """Terminal semantics: writing 3 chars only replaces the first 3."""
+        assert ansi.strip("abcdef\rXY") == "XYcdef"
+
+    def test_backspace_moves_the_cursor_back(self):
+        assert ansi.strip("abc\x08\x08XY") == "aXY"
+
+    def test_erase_to_end_truncates_at_the_cursor(self):
+        assert ansi.strip("abcdef\r\x1b[3C\x1b[K") == "abc"
+
+    def test_erase_to_start_blanks_up_to_the_cursor(self):
+        assert ansi.strip("abcdef\r\x1b[3C\x1b[1K") == "    ef"
+
+    def test_cursor_forward_pads_with_spaces(self):
+        assert ansi.strip("ab\x1b[3Ccd") == "ab   cd"
+
+    def test_column_addressing(self):
+        assert ansi.strip("abcdef\x1b[3GXY") == "abXYef"
+
+    def test_unknown_csi_is_consumed_not_printed(self):
+        assert ansi.strip("a\x1b[?25lb") == "ab"
+
+    def test_an_overwrite_carries_the_style_still_in_effect(self):
+        """Nothing reset SGR 31, so the rewritten cell is red as well."""
+        text, spans = ansi.parse("\x1b[31mRED\rX")
+        assert text == "XED"
+        assert [(s, ln) for s, ln, _ in spans] == [(0, 3)]
+
+    def test_a_reset_before_an_overwrite_splits_the_run(self):
+        """The style belongs to the cell, so the rewritten one loses it."""
+        text, spans = ansi.parse("\x1b[31mRED\r\x1b[0mX")
+        assert text == "XED"
+        assert [(s, ln) for s, ln, _ in spans] == [(1, 2)]
+
+    def test_plain_lines_take_the_fast_path_unchanged(self):
+        line = "[00:00:02.000,000] <inf> app: hello\tworld"
+        assert ansi.parse(line) == (line, [])

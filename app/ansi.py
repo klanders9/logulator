@@ -11,6 +11,13 @@ at `^`, so a leading colour code disables syntax colouring outright, and
 matching. Escapes therefore have to come out of the text before anything
 else looks at it.
 
+`parse()` is a one-line terminal: it renders the sequence of writes, cursor
+moves and erases into the text a terminal would end up showing. Merely
+deleting the escapes is not enough, because the Zephyr shell wipes its prompt
+before printing each log message — `uart:~$ ESC[2K CR [00:00:00.200] <inf> …`
+— so dropping the erase and the carriage return without acting on them
+cements the prompt onto the front of every log line during boot.
+
 Stdlib only, and pure — no Qt, no settings, no state. `parse()` returns
 plain data so the caller decides how (or whether) to paint it.
 
@@ -55,6 +62,12 @@ _ESCAPE_RE = re.compile(
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]")
 
 _SGR_RE = re.compile(r"\x1b\[([0-?]*)m\Z")
+
+# CSI split into parameters and final byte, for the cursor/erase sequences.
+_CSI_RE = re.compile(r"\x1b\[([0-?]*)[ -/]*([@-~])\Z")
+
+# Only these need the line actually rendered rather than filtered.
+_NEEDS_RENDER = re.compile(r"[\x1b\r\x08]")
 
 # Dracula's ANSI palette. Both app themes are dark, so one set reads well on
 # either; the point is only to honour the 8/16 colour indices the firmware
@@ -154,62 +167,119 @@ def has_escapes(line: str) -> bool:
 
 
 def strip(line: str) -> str:
-    """Return the line with all escape sequences and control bytes removed."""
-    return _CONTROL_RE.sub("", _ESCAPE_RE.sub("", line))
+    """Return the text a terminal would show for this line, without styling.
+
+    Defined as `parse(line)[0]` so the text used for filtering, searching and
+    the minimap can never disagree with the text on screen.
+    """
+    return parse(line)[0]
+
+
+def _first_param(params: str, default: int) -> int:
+    head = params.split(";")[0].lstrip("?")
+    return int(head) if head.isdigit() else default
+
+
+def _apply_csi(cells: list, col: int, params: str, final: str) -> int:
+    """Act on one cursor/erase CSI. Returns the new column.
+
+    Only the sequences a log stream actually uses are implemented; anything
+    else is consumed and ignored, which is what a terminal does with a
+    capability it lacks.
+    """
+    if final == "K":  # erase in line
+        mode = _first_param(params, 0)
+        if mode == 0:
+            del cells[col:]
+        elif mode == 1:
+            for i in range(min(col + 1, len(cells))):
+                cells[i] = (" ", DEFAULT_STYLE)
+        else:
+            del cells[:]
+    elif final == "J":  # erase in display — one line is all we have
+        if _first_param(params, 0) == 2:
+            del cells[:]
+    elif final == "C":
+        col += _first_param(params, 1)
+    elif final == "D":
+        col = max(0, col - _first_param(params, 1))
+    elif final == "G":
+        col = max(0, _first_param(params, 1) - 1)
+    elif final in ("H", "f"):
+        col = 0  # row is meaningless in a line-oriented view
+    return col
+
+
+def _render(line: str) -> Tuple[str, List[Span]]:
+    """Replay the line's writes, moves and erases into final cell contents."""
+    cells: List[Tuple[str, Style]] = []
+    col = 0
+    style = DEFAULT_STYLE
+    pos, end = 0, len(line)
+
+    while pos < end:
+        match = _ESCAPE_RE.match(line, pos)
+        if match:
+            pos = match.end()
+            seq = match.group(0)
+            sgr = _SGR_RE.match(seq)
+            if sgr is not None:
+                style = _apply_sgr(style, sgr.group(1))
+                continue
+            csi = _CSI_RE.match(seq)
+            if csi is not None:
+                col = _apply_csi(cells, col, csi.group(1), csi.group(2))
+            continue
+
+        char = line[pos]
+        pos += 1
+        if char == "\r":
+            col = 0
+            continue
+        if char == "\x08":
+            col = max(0, col - 1)
+            continue
+        if _CONTROL_RE.match(char):
+            continue
+        if col < len(cells):
+            cells[col] = (char, style)
+        else:
+            cells.extend([(" ", DEFAULT_STYLE)] * (col - len(cells)))
+            cells.append((char, style))
+        col += 1
+
+    text = "".join(char for char, _ in cells)
+    spans: List[Span] = []
+    run_start = 0
+    run_style = cells[0][1] if cells else DEFAULT_STYLE
+    for index, (_char, cell_style) in enumerate(cells):
+        if cell_style != run_style:
+            if run_style != DEFAULT_STYLE:
+                spans.append((run_start, index - run_start, run_style))
+            run_start, run_style = index, cell_style
+    if run_style != DEFAULT_STYLE and len(cells) > run_start:
+        spans.append((run_start, len(cells) - run_start, run_style))
+    return text, spans
 
 
 def parse(line: str) -> Tuple[str, List[Span]]:
-    """Split a line into display text and the colour spans SGR asked for.
+    """Render a line into display text and the colour spans SGR asked for.
 
-    Returns `(text, spans)`. `text` never contains escapes or control bytes.
-    `spans` covers only the runs that carry a non-default style, and is empty
-    for a line with no colouring — so a caller can treat "no spans" as
-    "colour this the usual way".
+    Returns `(text, spans)`. `text` is what a terminal would end up showing:
+    no escapes, no control bytes, and with carriage returns, backspaces and
+    erase-line sequences applied rather than discarded. `spans` covers only
+    the runs carrying a non-default style, and is empty for a line with no
+    colouring — so a caller can treat "no spans" as "colour this the usual
+    way".
 
-    Cursor motion, erase-line and the rest of VT100 are removed rather than
-    emulated. A shell redrawing its prompt in place therefore shows each
-    revision as written instead of only the final state; the alternative is
-    guessing which characters an overwrite was meant to replace, and the
-    session log already holds the exact bytes for anyone who needs them.
+    Overwrites are resolved the way a terminal resolves them, by column: a
+    write lands on the cell the cursor is over. Guessing was the alternative,
+    and guessing wrong showed up as the shell prompt cemented onto the front
+    of every log line.
     """
-    if "\x1b" not in line:
-        cleaned = _CONTROL_RE.sub("", line)
-        return cleaned, []
-
-    out: List[str] = []
-    spans: List[Span] = []
-    style = DEFAULT_STYLE
-    pos = 0          # index into the cleaned text
-    run_start = 0
-    run_style = DEFAULT_STYLE
-
-    def close_run(end: int) -> None:
-        # A run only starts when the style actually changes, so consecutive
-        # spans always differ and never need merging.
-        if end > run_start and run_style != DEFAULT_STYLE:
-            spans.append((run_start, end - run_start, run_style))
-
-    last = 0
-    for m in _ESCAPE_RE.finditer(line):
-        chunk = _CONTROL_RE.sub("", line[last:m.start()])
-        if chunk:
-            out.append(chunk)
-            pos += len(chunk)
-        last = m.end()
-
-        sgr = _SGR_RE.match(m.group(0))
-        if sgr is None:
-            continue
-        new_style = _apply_sgr(style, sgr.group(1))
-        if new_style != style:
-            close_run(pos)
-            run_start, run_style = pos, new_style
-            style = new_style
-
-    chunk = _CONTROL_RE.sub("", line[last:])
-    if chunk:
-        out.append(chunk)
-        pos += len(chunk)
-    close_run(pos)
-
-    return "".join(out), spans
+    # The overwhelming majority of log lines have nothing to render — no
+    # escape, no carriage return, no backspace — so they skip the cell buffer
+    # entirely and only pay one regex scan for stray control bytes.
+    if not _NEEDS_RENDER.search(line):
+        return _CONTROL_RE.sub("", line), []
+    return _render(line)

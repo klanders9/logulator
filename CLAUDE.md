@@ -162,17 +162,31 @@ before anything downstream sees it.
 - Palette is Dracula's 16 ANSI colours. Both app themes are dark, so one set
   serves; the goal is honouring the requested index, not emulating a specific
   terminal.
-- Cursor motion and erase-line are **removed, not emulated**. A shell
-  redrawing its prompt shows each revision rather than only the final state;
-  emulating it means guessing which characters an overwrite replaced, and the
-  session log already holds the exact bytes. Same reasoning for backspace.
-- `parse()` returns spans as `(start, length, Style)` over the *cleaned* text,
-  covering only non-default runs — so "no spans" means "colour this the usual
-  way". Runs only start on an actual style change, so consecutive spans always
-  differ and never need merging.
-- Cost is ~290 ns/line for a line with no escapes (fast path: `"\x1b" not in
-  line`) and ~2.5 µs for a coloured one, against ~10–50 µs for the
-  `QTextCursor.insertText` that follows. Not a factor in serial throughput.
+- `parse()` is a **one-line terminal**, not an escape filter: `_render()`
+  replays writes, cursor moves and erases into a `cells` list of
+  `(char, Style)` indexed by column, and returns what a terminal would end up
+  showing. Deleting the sequences instead is not enough — the Zephyr shell
+  wipes its prompt before printing each log message
+  (`uart:~$ ESC[2K CR [00:00:00.200] <inf> …`), so dropping the erase and the
+  carriage return without acting on them cemented the prompt onto the front of
+  every log line during boot. Implemented: `\r` (column 0), `\b`,
+  `ESC[K`/`[1K`/`[2K`, `ESC[2J`, `ESC[nC`/`[nD`, `ESC[nG`, `ESC[H`. Anything
+  else is consumed and ignored, which is what a terminal does with a
+  capability it lacks. Writing past the end pads with spaces; a short
+  overwrite leaves the tail, as on a real terminal.
+- `strip(line)` is defined as `parse(line)[0]`, so the text used for
+  filtering, searching and the minimap can never disagree with the text on
+  screen.
+- `parse()` returns spans as `(start, length, Style)` over the *rendered*
+  text, covering only non-default runs — so "no spans" means "colour this the
+  usual way". Style belongs to the cell, so an overwrite carries whatever SGR
+  is in effect at the time of the write, not at the time of the original.
+- Cost is ~520 ns/line for a line with nothing to render (fast path:
+  `_NEEDS_RENDER`, i.e. no ESC, CR or BS) and ~16 µs for one that goes through
+  the cell buffer, against ~10–50 µs for the `QTextCursor.insertText` that
+  follows. At 115200 baud that is well under 1% of a core. One code path
+  rather than a second SGR-only shortcut, so rendered text and filtered text
+  cannot drift apart.
 
 ### `app/log_format.py` — pure format parsing
 Stdlib-only home for log-line format knowledge shared by `colorizer.py` and
@@ -1118,9 +1132,11 @@ Implementation complete and tested on macOS. All core features working:
   document. They are still in the session log, so reopening it in the file
   viewer under the new mode shows them. Turning stripping *on* does apply
   retroactively.
-- VT100 cursor motion, erase-line and backspace are removed rather than
-  emulated, so a shell redrawing its prompt in place shows each revision
-  instead of only the final state.
+- VT100 handling is **line-local**. Cursor motion, erase and overwrite are
+  emulated within a single line; anything spanning lines (scroll regions,
+  cursor-up, a real alternate screen) is not, since the pane is an append-only
+  transcript rather than a screen. In practice a log stream only needs
+  column-level control, which is what the shell's prompt redraw uses.
 - `app/ansi.py` is stdlib-only and pure by the same rule as
   `app/log_format.py`. It may import neither Qt nor `AppSettings`; the mode
   decision belongs to `LogWindowMixin._split_ansi`.
