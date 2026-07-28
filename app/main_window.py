@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app import filter_engine
 from app.log_writer import LogWriter
 from app.serial_worker import SerialWorker
 from app.settings import AppSettings
@@ -365,28 +364,15 @@ class MainWindow(LogWindowMixin, QMainWindow):
         """Log and echo one transmitted line with the '>> ' marker, so the
         session file captures both directions of the conversation."""
         self._log_writer.write_tx_line(text)
-        echo = ">> " + text
-        self._raw_pane.append_line(self._get_segments(echo, "raw"))
-        if self._minimap.isVisible():
-            self._minimap.append_color(self._minimap_color_for(echo))
-        if self._rules and filter_engine.match(echo, self._rules, self._filter_mode):
-            self._filtered_pane.append_line(self._get_segments(echo, "filtered"))
-            if self._filtered_minimap.isVisible():
-                self._filtered_minimap.append_color(self._minimap_color_for(echo))
+        self._append_display_line(">> " + text)
 
     # ------------------------------------------------------------------
     # Incoming data
     # ------------------------------------------------------------------
 
     def _on_new_line(self, line: str):
-        self._raw_pane.append_line(self._get_segments(line, "raw"))
-        if self._minimap.isVisible():
-            self._minimap.append_color(self._minimap_color_for(line))
+        self._append_display_line(line)
         self._line_count += 1
-        if self._rules and filter_engine.match(line, self._rules, self._filter_mode):
-            self._filtered_pane.append_line(self._get_segments(line, "filtered"))
-            if self._filtered_minimap.isVisible():
-                self._filtered_minimap.append_color(self._minimap_color_for(line))
 
     # ------------------------------------------------------------------
     # Filters

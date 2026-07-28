@@ -122,6 +122,47 @@ use, so what is painted `<err>` is what a `level: err` rule selects. Matching
 only an explicit `<tag>` here meant syslog and unstructured lines were
 coloured by severity but invisible to level filters.
 
+### `app/ansi.py` — ANSI/VT100 escape sequence parsing
+Stdlib-only and pure (no Qt, no settings, no state), like `log_format.py`.
+Exports `parse(line) -> (text, spans)`, `strip(line)`, `has_escapes(line)`,
+`Style` and `DEFAULT_STYLE`.
+
+Some firmware emits coloured log output (Zephyr's
+`CONFIG_LOG_BACKEND_SHOW_COLOR`) and any build with a shell emits VT100 cursor
+control. Beyond looking like noise, escapes **break the line-structure
+parsers**: `colorizer._ZEPHYR_RE` is anchored at `^`, so a leading colour code
+disables syntax colouring entirely, and `log_format.MODULE_RE` needs
+whitespace directly after the level tag, so `<wrn>\x1b[0m module:` yields no
+module and `module:` filter rules stop matching. (`detect_level` uses
+`search`, so it was never affected — which is why level filters kept working
+while module filters silently didn't.) Escapes therefore come out of the text
+before anything downstream sees it.
+
+- `_ESCAPE_RE` covers CSI, OSC (BEL- or ST-terminated), DCS/SOS/PM/APC, nF
+  (`ESC ( B`), single-character Fe escapes, and a trailing lone `ESC` — a
+  sequence split across two serial reads leaves one at end of line.
+- `_CONTROL_RE` removes stray C0 bytes (backspace, BEL, …) that would draw as
+  boxes. **Tab is kept** — it is content in a log line.
+- SGR handling: reset, bold, italic, underline and their off-codes, 30–37,
+  90–97, 39, `38;5;n` (xterm-256) and `38;2;r;g;b` (truecolour). Background
+  codes (40–47, 100–107, `48;…`, 49) are *parsed* so their parameters are not
+  misread as a foreground request, then discarded — per-line background blocks
+  hurt readability and the firmware's choice rarely suits a theme it never saw.
+- Palette is Dracula's 16 ANSI colours. Both app themes are dark, so one set
+  serves; the goal is honouring the requested index, not emulating a specific
+  terminal.
+- Cursor motion and erase-line are **removed, not emulated**. A shell
+  redrawing its prompt shows each revision rather than only the final state;
+  emulating it means guessing which characters an overwrite replaced, and the
+  session log already holds the exact bytes. Same reasoning for backspace.
+- `parse()` returns spans as `(start, length, Style)` over the *cleaned* text,
+  covering only non-default runs — so "no spans" means "colour this the usual
+  way". Runs only start on an actual style change, so consecutive spans always
+  differ and never need merging.
+- Cost is ~290 ns/line for a line with no escapes (fast path: `"\x1b" not in
+  line`) and ~2.5 µs for a coloured one, against ~10–50 µs for the
+  `QTextCursor.insertText` that follows. Not a factor in serial throughput.
+
 ### `app/log_format.py` — pure format parsing
 Stdlib-only home for log-line format knowledge shared by `colorizer.py` and
 `filter_engine.py`: `LEVELS`, `LEVEL_TAG_RE`, `MODULE_RE`, `keyword_level()`,
@@ -165,6 +206,19 @@ here to avoid circular imports. Key contents:
   - `dragEnterEvent` / `dropEvent` accept local file URL drops and emit
     `file_dropped(Path)`. Text drops fall through to the default QTextEdit
     handler.
+- `ANSI_PROPERTY`, `ansi_fmt(style)`, `ansi_segments(text, spans)`,
+  `block_ansi_segments(block)` — support for painting lines from escape
+  sequences. `ansi_fmt` sets foreground plus the three font flags and **never**
+  family or point size, so the sidebar's font-size control still applies to
+  these lines; it tags the format with `ANSI_PROPERTY` (a
+  `QTextFormat.Property.UserProperty` offset). The tag is what lets a rebuild
+  tell a wire-coloured run from a colorizer-coloured one: rebuilds re-colorize
+  from block text, which no longer holds the escapes, so without it the wire
+  colours would be lost the first time a theme or filter change fired.
+  `QTextCharFormat` is a value type stored per character run, so the tag
+  survives being copied into the rebuilt document — no `QTextBlockUserData`
+  ownership questions. `block_ansi_segments` walks a block's fragments and
+  returns them verbatim if **any** carries the tag, else `None`.
 - `make_pane(font, cap=None) -> LogPane` — factory used by both windows.
 - `doc_line_count(pane) -> int` — displayed line count (0 for an empty
   document; Qt reports blockCount()==1 when empty).
@@ -341,6 +395,10 @@ that default. Absolute by construction, so it no longer depends on the process
 working directory — the old relative `"logs"` meant a terminal launch and a
 desktop-launcher launch wrote to different places.
 
+Escape sequences: `ansi_mode() -> str` / `set_ansi_mode(val: str)` —
+`'strip'`/`'render'`/`'off'`, stored under `display/ansi_mode`, default
+`'strip'`. Display only — the session log always records the bytes verbatim.
+
 Minimap: `minimap_enabled() -> bool` / `set_minimap_enabled(val: bool)` —
 stored under `display/minimap_enabled`, default `False`. `minimap_apply_to()
 -> str` / `set_minimap_apply_to(val: str)` — `'all'`/`'raw'`/`'filtered'`,
@@ -446,6 +504,9 @@ Changes are broadcast: `LogWindowMixin._on_settings_changed()` and
 cap goes through `MainWindow._instances` instead, since file viewers keep
 `_FILE_PANE_CAP`. Theme needs no broadcast — the palette is application-wide.
 
+- **Display / Escape sequences:** "ANSI codes" combo (Strip / Render colors /
+  Show raw), placed above the colorization controls because it decides what
+  the colorizer sees. Emits `settings_changed()`.
 - **Display / Colorization:** enable checkbox, mode selector (Level/Syntax),
   apply-to selector (All panes / Raw log only / Filtered log only / None),
   and color-picker rows for all eight configurable colors (four levels, three
@@ -526,6 +587,39 @@ Simple modal dialog opened from Help → About Logulator. Shows: `icon.png`
 (if present, scaled to 64×64), app name, version from `app.version.__version__`,
 description, MIT license, clickable GitHub link (`https://github.com/klanders9/logulator`),
 and "† Soli Deo Gloria". Fixed width, OK button to dismiss.
+
+### `app/ui/log_window.py` — `LogWindowMixin`
+Everything `MainWindow` and `FileViewer` do identically: pane/minimap/filter-bar
+construction, the colorization pipeline, pane rebuilds, filtered-pane
+visibility, selection exclusion, the minimap surface, and the settings/theme/
+font broadcasts over the module-level `_open_windows` registry
+(`open_log_windows()`). Subclasses call `_init_log_window()` then
+`_build_log_panes()`, and supply `_on_filters_changed` and `open_file`.
+
+Incoming-line path — the one place display text is produced, so the two
+windows cannot drift:
+
+- `_append_display_line(line, scroll=True)` — appends to the raw pane, to the
+  filtered pane if the line matches, and to whichever minimaps are showing.
+  Used by `MainWindow._on_new_line`/`_record_tx` and by `FileViewer`'s chunk
+  loader and follow-mode tail.
+- `_split_ansi(line) -> (text, spans)` — applies `AppSettings.ansi_mode()`.
+  Called **once** per line, and everything downstream (panes, `filter_engine`,
+  minimap, find bar) works off the returned text, so escapes are removed
+  exactly once and nothing else has to know they existed.
+- `_segments_for(text, spans, pane)` — wire colours win for the lines that
+  carry them, otherwise `_get_segments()`. Per-line rather than a global mode
+  flip: mixed output is normal (a bootloader prints plain, the app colours),
+  and a single stray escape early in a boot log must not silently disable
+  colourization for the whole session.
+- `_segments_for_block(block, pane)` — the rebuild counterpart. Returns stored
+  wire-coloured runs verbatim (via `block_ansi_segments`) but **only while
+  `ansi_mode` is still `'render'`**, so switching away releases those lines
+  back to the colorizer. Otherwise it re-splits the block text, which is what
+  makes turning stripping *on* clean up lines already on screen. The reverse
+  is not recoverable: once an escape is out of the document it exists only in
+  the session log. A mode change reaches this through
+  `settings_changed` → `_apply_display_settings()`.
 
 ### `app/ui/file_viewer.py` — `FileViewer(QMainWindow)`
 Standalone log file viewer. Multiple instances may coexist; none are parented
@@ -937,6 +1031,13 @@ Implementation complete and tested on macOS. All core features working:
   reconnecting… ---" / "--- reconnected ---") are appended to both display
   panes to mark the event; checkbox state persisted via `AppSettings`; clicking
   Disconnect or unchecking the box while reconnecting cancels and ends the session
+- ANSI/VT100 escape handling: stripped from the display by default, so colored
+  firmware output stops rendering as literal escape characters *and* the
+  anchored Zephyr syntax regex and module-prefix filters work on those lines
+  again; "Render colors" honors the target's SGR colors per line (falling back
+  to logulator's colorization on lines that carry none); "Show raw" keeps the
+  old behavior. Setting lives in **⚙ Settings → Display → Escape sequences**.
+  The session log is unaffected in every mode
 - Minimap (colorband-minimap branch, off by default): optional colored-band
   overview strip beside the raw and/or filtered pane, showing per-line
   severity color down-sampled to the widget's pixel height; click/drag to
@@ -963,6 +1064,18 @@ Implementation complete and tested on macOS. All core features working:
   `FileLoaderWorker` strips `\r\n` / `\r` via `rstrip("\r\n")`.
 - `LogPane` is defined in `app/ui/log_pane.py` (not `main_window.py`) to
   avoid circular imports between `MainWindow` and `FileViewer`.
+- Escape-sequence stripping is one-way within a session. The panes hold the
+  cleaned text, so switching `ansi_mode` to `'off'` or `'render'` affects new
+  lines only — the escapes behind lines already on screen are gone from the
+  document. They are still in the session log, so reopening it in the file
+  viewer under the new mode shows them. Turning stripping *on* does apply
+  retroactively.
+- VT100 cursor motion, erase-line and backspace are removed rather than
+  emulated, so a shell redrawing its prompt in place shows each revision
+  instead of only the final state.
+- `app/ansi.py` is stdlib-only and pure by the same rule as
+  `app/log_format.py`. It may import neither Qt nor `AppSettings`; the mode
+  decision belongs to `LogWindowMixin._split_ansi`.
 - `filter_engine.py` must remain **stateless**: pure functions only, no
   instance state, no Qt, no `AppSettings`, no UI coupling. It may be edited,
   but not turned into something that holds state or reaches into the app.

@@ -5,12 +5,28 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QMimeData, Signal
-from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor, QTextDocument
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QTextCharFormat,
+    QTextCursor,
+    QTextDocument,
+    QTextFormat,
+)
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QTextEdit, QVBoxLayout, QWidget
 
+from app.ansi import DEFAULT_STYLE, Style
 from app.theme import active_colors
 
 _DEFAULT_CAP = 100_000
+
+# Marks a format whose colour came off the wire as an escape sequence rather
+# than from the colorizer. Pane rebuilds (theme switch, colorization change,
+# filter change) re-colorize from block text, which no longer holds the
+# escapes — so without a marker the wire colours would be lost the first time
+# anything triggered a rebuild. Formats are value types stored per character
+# run, so the marker survives being copied into the rebuilt document.
+ANSI_PROPERTY = QTextFormat.Property.UserProperty + 1
 
 
 def _pane_style() -> str:
@@ -26,6 +42,64 @@ def _fmt(hex_color: str) -> QTextCharFormat:
     f = QTextCharFormat()
     f.setForeground(QColor(hex_color))
     return f
+
+
+def ansi_fmt(style: Style) -> QTextCharFormat:
+    """Build a format from an ANSI style, tagged with ANSI_PROPERTY.
+
+    Only foreground and the three font flags are set — never family or point
+    size, so the sidebar's font-size control still applies to these lines.
+    """
+    f = QTextCharFormat()
+    f.setForeground(QColor(style.color or _plain_color()))
+    if style.bold:
+        f.setFontWeight(QFont.Weight.Bold)
+    if style.italic:
+        f.setFontItalic(True)
+    if style.underline:
+        f.setFontUnderline(True)
+    f.setProperty(ANSI_PROPERTY, True)
+    return f
+
+
+def ansi_segments(text: str, spans) -> List[Tuple[str, QTextCharFormat]]:
+    """Segments for a line whose colours came off the wire.
+
+    Gaps between spans get the plain colour, the way a terminal falls back to
+    the default foreground, and are tagged too so the whole block round-trips
+    through a rebuild as one unit.
+    """
+    segments: List[Tuple[str, QTextCharFormat]] = []
+    at = 0
+    for start, length, style in spans:
+        if start > at:
+            segments.append((text[at:start], ansi_fmt(DEFAULT_STYLE)))
+        segments.append((text[start:start + length], ansi_fmt(style)))
+        at = start + length
+    if at < len(text):
+        segments.append((text[at:], ansi_fmt(DEFAULT_STYLE)))
+    return segments
+
+
+def block_ansi_segments(block) -> Optional[List[Tuple[str, QTextCharFormat]]]:
+    """Stored (text, format) runs of a block that was painted from escapes.
+
+    Returns None for an ordinary block, so the caller can re-colorize it
+    normally. Wire colours are not the colorizer's to change, so a block that
+    has any tagged run is reproduced exactly as it stands.
+    """
+    segments: List[Tuple[str, QTextCharFormat]] = []
+    tagged = False
+    it = block.begin()
+    while not it.atEnd():
+        fragment = it.fragment()
+        if fragment.isValid():
+            fmt = fragment.charFormat()
+            if fmt.property(ANSI_PROPERTY):
+                tagged = True
+            segments.append((fragment.text(), fmt))
+        it += 1
+    return segments if tagged else None
 
 
 class LogPane(QTextEdit):

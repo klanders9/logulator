@@ -153,3 +153,22 @@ class TestTxEchoEmpty:
         assert settings.tx_echo_empty() is True
         settings.set_tx_echo_empty(False)
         assert settings.tx_echo_empty() is False
+
+
+class TestAnsiMode:
+    def test_defaults_to_strip(self, settings):
+        assert settings.ansi_mode() == "strip"
+
+    @pytest.mark.parametrize("value", ["strip", "render", "off"])
+    def test_round_trips_valid_values(self, settings, value):
+        settings.set_ansi_mode(value)
+        assert settings.ansi_mode() == value
+
+    def test_rejects_unknown_values(self, settings):
+        settings.set_ansi_mode("render")
+        settings.set_ansi_mode("technicolor")
+        assert settings.ansi_mode() == "render"
+
+    def test_falls_back_when_the_store_holds_junk(self, settings):
+        settings._qs.setValue("display/ansi_mode", "technicolor")
+        assert settings.ansi_mode() == "strip"

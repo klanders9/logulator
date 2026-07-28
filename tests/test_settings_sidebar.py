@@ -125,3 +125,20 @@ class TestEchoBlankSends:
         sidebar.settings_changed.connect(lambda: fired.append(1))
         sidebar._echo_empty_cb.setChecked(True)
         assert fired == []
+
+
+class TestAnsiMode:
+    def test_defaults_to_strip(self, sidebar, settings):
+        assert sidebar._ansi_combo.currentText() == "Strip"
+        assert settings.ansi_mode() == "strip"
+
+    def test_change_persists_and_emits(self, sidebar, settings, qtbot):
+        with qtbot.waitSignal(sidebar.settings_changed):
+            sidebar._ansi_combo.setCurrentIndex(1)
+        assert settings.ansi_mode() == "render"
+
+    def test_reflects_the_stored_value(self, qtbot, settings):
+        settings.set_ansi_mode("off")
+        w = SettingsSidebar(settings)
+        qtbot.addWidget(w)
+        assert w._ansi_combo.currentText() == "Show raw"

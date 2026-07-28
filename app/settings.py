@@ -114,6 +114,27 @@ class AppSettings:
     def set_syntax_color(self, field: str, color: str) -> None:
         self._qs.setValue(f"color/syntax_{field}", color)
 
+    # --- Escape sequences ---
+
+    def ansi_mode(self) -> str:
+        """How ANSI/VT100 escape sequences in incoming lines are displayed.
+
+        'strip'  — remove them (default)
+        'render' — remove them, but paint the colours they asked for
+        'off'    — leave them in the text, escapes and all
+
+        Stripping is the default because escapes are never useful as glyphs
+        and, left in place, they also break the Zephyr syntax regex and module
+        detection, which are both anchored on line structure. This is a display
+        setting only: the session log always records the bytes verbatim.
+        """
+        v = self._qs.value("display/ansi_mode", "strip")
+        return v if v in ("strip", "render", "off") else "strip"
+
+    def set_ansi_mode(self, val: str) -> None:
+        if val in ("strip", "render", "off"):
+            self._qs.setValue("display/ansi_mode", val)
+
     # --- Minimap ---
 
     def minimap_enabled(self) -> bool:

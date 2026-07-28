@@ -11,6 +11,7 @@ A cross-platform desktop GUI for monitoring and filtering serial log output.
 - Include and exclude rules, combinable with AND/OR logic
 - Configurable rolling display buffer (default 100,000 lines; log file retains everything)
 - Syntax colorization with configurable per-level and per-field colors; understands Zephyr, syslog (traditional and ISO 8601), and generic keyword-based severity detection
+- ANSI/VT100 escape sequences from the target are stripped from the display by default, so colored firmware output reads cleanly and still gets logulator's own colorization and module filtering; switch to **Render colors** to honor the target's colors instead, or **Show raw** to see the escapes, under **⚙ Settings → Display → Escape sequences**. The session log always keeps the raw bytes
 - Smart scroll: auto-scrolls to new output only when already at the bottom
 - Double-click a line in the filtered pane to jump to and select it in the raw pane
 - Send characters out the serial port with the TX bar (Enter to send, ↑/↓ history, CRLF/LF/CR/None line ending); sent lines are echoed to the display and recorded in the session log with a `>> ` marker

@@ -509,3 +509,167 @@ class TestEmptySendEcho:
             assert raw_texts(win) == [">> ^C"]
         finally:
             win._on_disconnect(prompt_clear=False)
+
+
+ANSI_ERR = "\x1b[1;31m[00:00:05.000,000] <err> modem: init failed: -5\x1b[0m"
+ANSI_TAG = "[00:00:06.000,000] \x1b[1;33m<wrn>\x1b[0m modem: retrying"
+ANSI_SHELL = "\x1b[2J\x1b[Huart:~$ \x1b[Kkernel version"
+
+
+def block_runs(pane, index):
+    """(text, colour, is_ansi_tagged) for each format run of one block."""
+    from app.ui.log_pane import ANSI_PROPERTY
+
+    block = pane.document().findBlockByNumber(index)
+    runs = []
+    it = block.begin()
+    while not it.atEnd():
+        fragment = it.fragment()
+        if fragment.isValid():
+            fmt = fragment.charFormat()
+            runs.append(
+                (
+                    fragment.text(),
+                    fmt.foreground().color().name(),
+                    bool(fmt.property(ANSI_PROPERTY)),
+                )
+            )
+        it += 1
+    return runs
+
+
+class TestAnsiEscapeHandling:
+    """Escape sequences are a display concern; the log keeps the bytes."""
+
+    def test_stripped_by_default(self, win):
+        assert win._settings.ansi_mode() == "strip"
+        feed(win, ANSI_ERR, ANSI_TAG, ANSI_SHELL)
+        assert raw_texts(win) == [
+            "[00:00:05.000,000] <err> modem: init failed: -5",
+            "[00:00:06.000,000] <wrn> modem: retrying",
+            "uart:~$ kernel version",
+        ]
+
+    def test_stripping_restores_colorization(self, win):
+        """A leading colour code otherwise disables the anchored Zephyr regex."""
+        win._settings.set_color_mode("syntax")
+        feed(win, ANSI_ERR)
+        # Timestamp / level / module / message rather than one plain run.
+        assert len(block_runs(win._raw_pane, 0)) == 4
+
+    def test_stripping_restores_module_filtering(self, win):
+        win._rules = [{"type": "module", "value": "modem", "mode": "include"}]
+        win._filter_mode = "OR"
+        win._filtered_box.show()
+        feed(win, ANSI_TAG, "[00:00:07.000,000] <inf> net_if: unrelated")
+        assert filtered_texts(win) == ["[00:00:06.000,000] <wrn> modem: retrying"]
+
+    def test_render_mode_uses_the_wire_colour(self, win):
+        win._settings.set_ansi_mode("render")
+        feed(win, ANSI_TAG)
+        runs = block_runs(win._raw_pane, 0)
+        assert [text for text, _, _ in runs] == [
+            "[00:00:06.000,000] ",
+            "<wrn>",
+            " modem: retrying",
+        ]
+        # The firmware's yellow, not AppSettings.level_color('wrn').
+        assert runs[1][1] == "#f1fa8c"
+        assert runs[1][1] != win._settings.level_color("wrn")
+
+    def test_render_mode_leaves_uncoloured_lines_to_the_colorizer(self, win):
+        """Mixed output is normal — a bootloader prints plain, the app colours."""
+        win._settings.set_ansi_mode("render")
+        feed(win, "[00:00:08.000,000] <err> app: plain error")
+        text, color, is_ansi = block_runs(win._raw_pane, 0)[0]
+        assert is_ansi is False
+        assert color == win._settings.level_color("err")
+
+    def test_render_mode_survives_a_rebuild(self, win):
+        """The escapes are gone from the document, so a rebuild would otherwise
+        silently repaint these lines with the colorizer's palette."""
+        win._settings.set_ansi_mode("render")
+        feed(win, ANSI_TAG)
+        before = block_runs(win._raw_pane, 0)
+        win._apply_display_settings()
+        assert block_runs(win._raw_pane, 0) == before
+
+    def test_leaving_render_mode_releases_lines_to_the_colorizer(self, win):
+        win._settings.set_ansi_mode("render")
+        feed(win, ANSI_TAG)
+        win._settings.set_ansi_mode("strip")
+        win._apply_display_settings()
+        runs = block_runs(win._raw_pane, 0)
+        assert len(runs) == 1
+        assert runs[0][2] is False
+        assert runs[0][1] == win._settings.level_color("wrn")
+
+    def test_off_mode_shows_the_escapes(self, win):
+        win._settings.set_ansi_mode("off")
+        feed(win, ANSI_TAG)
+        assert raw_texts(win) == [ANSI_TAG]
+
+    def test_turning_stripping_on_cleans_existing_lines(self, win):
+        win._settings.set_ansi_mode("off")
+        feed(win, ANSI_TAG)
+        win._settings.set_ansi_mode("strip")
+        win._apply_display_settings()
+        assert raw_texts(win) == ["[00:00:06.000,000] <wrn> modem: retrying"]
+
+    def test_minimap_tracks_the_cleaned_line(self, win):
+        """Severity has to be read off the same text the pane shows."""
+        win._settings.set_minimap_enabled(True)
+        win._settings.set_minimap_apply_to("raw")
+        win._apply_minimap_settings()
+        feed(win, ANSI_ERR)
+        assert win._minimap._colors[-1].name() == win._settings.level_color("err")
+
+    def test_the_session_log_keeps_the_escapes(self, win, monkeypatch, tmp_path):
+        """Non-negotiable: the file records what arrived, not what was shown."""
+        from app import main_window as mw
+
+        win._settings.set_log_dir(str(tmp_path / "logs"))
+        monkeypatch.setattr(mw, "SerialWorker", lambda *a, **k: _StubWorker())
+        win._on_connect("/dev/nonexistent", 115200)
+        log_path = win._log_writer.current_path
+        try:
+            win._log_writer.write(ANSI_ERR.encode() + b"\n")
+            win._on_new_line(ANSI_ERR)
+        finally:
+            win._on_disconnect(prompt_clear=False)
+        assert log_path.read_bytes() == ANSI_ERR.encode() + b"\n"
+        assert "\x1b" not in raw_texts(win)[0]
+
+
+class TestAnsiInFileViewer:
+    """The file viewer loads saved logs, which is where the escapes end up."""
+
+    def test_chunk_load_strips(self, qtbot, win, tmp_path):
+        path = tmp_path / "coloured.log"
+        path.write_text(ANSI_ERR + "\n" + ANSI_SHELL + "\n")
+        v = FileViewer(win._settings, path)
+        qtbot.addWidget(v)
+        v.show()
+        with qtbot.waitSignal(v._worker.load_complete, timeout=5000):
+            pass
+        try:
+            assert raw_texts(v) == [
+                "[00:00:05.000,000] <err> modem: init failed: -5",
+                "uart:~$ kernel version",
+            ]
+        finally:
+            v.close()
+
+    def test_render_mode_applies_on_load(self, qtbot, win, tmp_path):
+        win._settings.set_ansi_mode("render")
+        path = tmp_path / "coloured.log"
+        path.write_text(ANSI_TAG + "\n")
+        v = FileViewer(win._settings, path)
+        qtbot.addWidget(v)
+        v.show()
+        with qtbot.waitSignal(v._worker.load_complete, timeout=5000):
+            pass
+        try:
+            assert block_runs(v._raw_pane, 0)[1][1] == "#f1fa8c"
+        finally:
+            v.close()

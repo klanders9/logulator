@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app import filter_engine
 from app.settings import AppSettings
 from app.ui.find_bar import FindBar
 from app.ui.find_controller import FindController
@@ -156,19 +155,8 @@ class FileViewer(LogWindowMixin, QMainWindow):
 
     def _on_chunk_ready(self, lines: list) -> None:
         self._raw_pane.setUpdatesEnabled(False)
-        minimap_visible = self._minimap.isVisible()
-        filtered_minimap_visible = self._filtered_minimap.isVisible()
         for line in lines:
-            segs = self._get_segments(line, "raw")
-            self._raw_pane.append_line(segs, scroll=False)
-            if minimap_visible:
-                self._minimap.append_color(self._minimap_color_for(line))
-            if self._rules and filter_engine.match(line, self._rules, self._filter_mode):
-                self._filtered_pane.append_line(
-                    self._get_segments(line, "filtered"), scroll=False
-                )
-                if filtered_minimap_visible:
-                    self._filtered_minimap.append_color(self._minimap_color_for(line))
+            self._append_display_line(line, scroll=False)
         self._raw_pane.setUpdatesEnabled(True)
         self._total_lines += len(lines)
         self._update_status()
@@ -308,20 +296,8 @@ class FileViewer(LogWindowMixin, QMainWindow):
         self._tail_buffer = parts[-1]
         complete_lines = parts[:-1]
 
-        minimap_visible = self._minimap.isVisible()
-        filtered_minimap_visible = self._filtered_minimap.isVisible()
         for raw_line in complete_lines:
-            line = raw_line.rstrip("\r")
-            segs = self._get_segments(line, "raw")
-            self._raw_pane.append_line(segs, scroll=False)
-            if minimap_visible:
-                self._minimap.append_color(self._minimap_color_for(line))
-            if self._rules and filter_engine.match(line, self._rules, self._filter_mode):
-                self._filtered_pane.append_line(
-                    self._get_segments(line, "filtered"), scroll=False
-                )
-                if filtered_minimap_visible:
-                    self._filtered_minimap.append_color(self._minimap_color_for(line))
+            self._append_display_line(raw_line.rstrip("\r"), scroll=False)
 
         if complete_lines:
             self._total_lines += len(complete_lines)

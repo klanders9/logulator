@@ -23,7 +23,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import QApplication, QSplitter
 
-from app import filter_engine
+from app import ansi, filter_engine
 from app.colorizer import Colorizer
 from app.log_format import detect_level
 from app.settings import AppSettings
@@ -32,6 +32,8 @@ from app.ui.filter_bar import FilterBar
 from app.ui.log_pane import (
     _fmt,
     _plain_color,
+    ansi_segments,
+    block_ansi_segments,
     doc_line_count,
     make_pane,
     pane_with_header,
@@ -55,12 +57,18 @@ def open_log_windows() -> List["LogWindowMixin"]:
     return list(_open_windows)
 
 
-def iter_block_texts(doc):
-    """Yield the text of every block in a QTextDocument, in order."""
+def iter_blocks(doc):
+    """Yield every block of a QTextDocument, in order."""
     block = doc.begin()
     while block != doc.end():
-        yield block.text()
+        yield block
         block = block.next()
+
+
+def iter_block_texts(doc):
+    """Yield the text of every block in a QTextDocument, in order."""
+    for block in iter_blocks(doc):
+        yield block.text()
 
 
 def _is_empty_document(doc) -> bool:
@@ -169,6 +177,33 @@ class LogWindowMixin:
     # Colorization
     # ------------------------------------------------------------------
 
+    def _split_ansi(self, line: str) -> Tuple[str, list]:
+        """Split an incoming line into display text and wire colour spans.
+
+        Every consumer downstream — the panes, the filter engine, the minimap,
+        the find bar — works off the returned text, so escapes are removed
+        exactly once and nothing has to know they were ever there. Spans come
+        back empty unless the user asked for them to be painted.
+        """
+        mode = self._settings.ansi_mode()
+        if mode == "off":
+            return line, []
+        text, spans = ansi.parse(line)
+        return text, spans if mode == "render" else []
+
+    def _segments_for(
+        self, text: str, spans: list, pane: str
+    ) -> List[Tuple[str, QTextCharFormat]]:
+        """Segments for a line already split by _split_ansi().
+
+        Colours off the wire win over the colorizer for the lines that carry
+        them; a line with no escapes is unaffected, so a build that colours
+        only its warnings still gets level colouring everywhere else.
+        """
+        if spans:
+            return ansi_segments(text, spans)
+        return self._get_segments(text, pane)
+
     def _get_segments(
         self, line: str, pane: str
     ) -> List[Tuple[str, QTextCharFormat]]:
@@ -184,6 +219,49 @@ class LogWindowMixin:
             return [(line, self._plain_fmt)]
         return self._colorizer.colorize(line)
 
+    def _segments_for_block(
+        self, block, pane: str
+    ) -> List[Tuple[str, QTextCharFormat]]:
+        """Segments for an existing block during a rebuild.
+
+        Wire colours are preserved as stored rather than recomputed, since the
+        escapes that produced them are no longer in the block text — but only
+        while the user still wants them rendered, so switching the mode away
+        from 'render' releases those lines back to the colorizer.
+
+        Block text is re-split as well, so turning stripping *on* cleans up
+        lines already on screen. The reverse cannot be undone: once an escape
+        has been dropped from the document it is only in the session log.
+        """
+        if self._settings.ansi_mode() == "render":
+            stored = block_ansi_segments(block)
+            if stored is not None:
+                return stored
+        text, spans = self._split_ansi(block.text())
+        return self._segments_for(text, spans, pane)
+
+    # ------------------------------------------------------------------
+    # Incoming lines
+    # ------------------------------------------------------------------
+
+    def _append_display_line(self, line: str, scroll: bool = True) -> None:
+        """Append one incoming line to the raw pane, the filtered pane if it
+        matches, and whichever minimaps are showing.
+
+        The single entry point for display text in both windows, so the
+        escape handling above cannot be applied inconsistently between them.
+        """
+        text, spans = self._split_ansi(line)
+        self._raw_pane.append_line(self._segments_for(text, spans, "raw"), scroll=scroll)
+        if self._minimap.isVisible():
+            self._minimap.append_color(self._minimap_color_for(text))
+        if self._rules and filter_engine.match(text, self._rules, self._filter_mode):
+            self._filtered_pane.append_line(
+                self._segments_for(text, spans, "filtered"), scroll=scroll
+            )
+            if self._filtered_minimap.isVisible():
+                self._filtered_minimap.append_color(self._minimap_color_for(text))
+
     # ------------------------------------------------------------------
     # Pane rebuilds
     # ------------------------------------------------------------------
@@ -193,8 +271,8 @@ class LogWindowMixin:
         # fills a new one, so nothing has to be buffered in between.
         self._raw_pane.setUpdatesEnabled(False)
         self._raw_pane.replace_lines(
-            self._get_segments(line, "raw")
-            for line in iter_block_texts(self._raw_pane.document())
+            self._segments_for_block(block, "raw")
+            for block in iter_blocks(self._raw_pane.document())
         )
         self._raw_pane.setUpdatesEnabled(True)
         sb = self._raw_pane.verticalScrollBar()
@@ -205,9 +283,9 @@ class LogWindowMixin:
     def _rebuild_filtered_pane(self) -> None:
         self._filtered_pane.setUpdatesEnabled(False)
         self._filtered_pane.replace_lines(
-            self._get_segments(text, "filtered")
-            for text in iter_block_texts(self._raw_pane.document())
-            if filter_engine.match(text, self._rules, self._filter_mode)
+            self._segments_for_block(block, "filtered")
+            for block in iter_blocks(self._raw_pane.document())
+            if filter_engine.match(block.text(), self._rules, self._filter_mode)
         )
         self._filtered_pane.setUpdatesEnabled(True)
         sb = self._filtered_pane.verticalScrollBar()

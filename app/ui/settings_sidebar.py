@@ -32,6 +32,9 @@ _THEME_VALUES = ["dracula", "vscode"]
 _MINIMAP_APPLY_LABELS = ["Both panes", "Raw only", "Filtered only"]
 _MINIMAP_APPLY_VALUES = ["all", "raw", "filtered"]
 
+_ANSI_LABELS = ["Strip", "Render colors", "Show raw"]
+_ANSI_VALUES = ["strip", "render", "off"]
+
 
 _FONT_SIZES = ["8", "9", "10", "11", "12", "13", "14", "16", "18", "20", "24"]
 
@@ -79,6 +82,30 @@ class SettingsSidebar(QWidget):
         layout.addLayout(font_row)
 
         layout.addWidget(self._section_label("Display"))
+
+        # Ahead of colorization, because it decides what the colorizer sees.
+        layout.addWidget(self._subsection_label("Escape sequences"))
+        ansi_row = QHBoxLayout()
+        ansi_row.addWidget(QLabel("ANSI codes:"))
+        self._ansi_combo = QComboBox()
+        self._ansi_combo.addItems(_ANSI_LABELS)
+        cur_ansi = settings.ansi_mode()
+        self._ansi_combo.setCurrentIndex(
+            _ANSI_VALUES.index(cur_ansi) if cur_ansi in _ANSI_VALUES else 0
+        )
+        self._ansi_combo.setToolTip(
+            "How to display ANSI/VT100 escape codes from the target.\n\n"
+            "Strip — remove them and colorize normally (recommended)\n"
+            "Render colors — paint the colors the target asked for\n"
+            "Show raw — leave the escape characters in the text\n\n"
+            "The session log always records the bytes verbatim."
+        )
+        self._ansi_combo.currentIndexChanged.connect(
+            lambda i: self._on_ansi_mode_changed(_ANSI_VALUES[i])
+        )
+        ansi_row.addWidget(self._ansi_combo, stretch=1)
+        layout.addLayout(ansi_row)
+
         layout.addWidget(self._subsection_label("Colorization"))
 
         self._enable_cb = QCheckBox("Enable colorization")
@@ -264,6 +291,10 @@ class SettingsSidebar(QWidget):
 
     def _on_enable_toggled(self, checked: bool) -> None:
         self._s.set_color_enabled(checked)
+        self.settings_changed.emit()
+
+    def _on_ansi_mode_changed(self, value: str) -> None:
+        self._s.set_ansi_mode(value)
         self.settings_changed.emit()
 
     def _on_mode_changed(self, text: str) -> None:
