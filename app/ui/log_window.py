@@ -96,6 +96,8 @@ class LogWindowMixin:
         self._rules: list = []
         self._filter_mode = "OR"
         self._splitter_initialized = False
+        # True while the last raw block holds a provisional, unterminated line.
+        self._pending_partial = False
         _open_windows.append(self)
 
     def _release_log_window(self) -> None:
@@ -192,22 +194,27 @@ class LogWindowMixin:
         text, spans = ansi.parse(line)
         return text, spans if mode == "render" else []
 
-    def _colorization_active(self, pane: str) -> bool:
-        """Whether this pane is currently colorized at all.
-
-        The one gate, shared by the colorizer and the escape-sequence painter.
-        Wire colours used to bypass it, which made "Enable colorization" off
-        and "Apply to: raw only" both leak colour onto lines that carried
-        escapes.
-        """
-        if not self._settings.color_enabled():
-            return False
+    def _pane_shows_color(self, pane: str) -> bool:
+        """Whether 'Apply to' routes any colour to this pane."""
         apply_to = self._settings.color_apply_to()
         if apply_to == "none":
             return False
         if apply_to in ("raw", "filtered"):
             return pane == apply_to
         return True
+
+    def _colorization_active(self, pane: str) -> bool:
+        """Whether the *colorizer* runs for this pane.
+
+        Wire colours deliberately do not consult this — they answer to
+        `_pane_shows_color()` alone. "Enable colorization" governs logulator's
+        own level/syntax colouring, and turning it off while choosing "Render
+        colors" is the natural way to say "use the target's colours, not
+        yours". Gating both on one flag made that combination render plain.
+        'Apply to' is different: it routes colour to a pane, so it applies to
+        either source.
+        """
+        return self._settings.color_enabled() and self._pane_shows_color(pane)
 
     def _segments_for(
         self, text: str, spans: list, pane: str
@@ -220,7 +227,7 @@ class LogWindowMixin:
         paths answer to _colorization_active().
         """
         if spans:
-            return ansi_segments(text, spans, self._colorization_active(pane))
+            return ansi_segments(text, spans, self._pane_shows_color(pane))
         return self._get_segments(text, pane)
 
     def _get_segments(
@@ -249,7 +256,7 @@ class LogWindowMixin:
         if self._settings.ansi_mode() == "render":
             stored = block_ansi_styles(block)
             if stored is not None:
-                active = self._colorization_active(pane)
+                active = self._pane_shows_color(pane)
                 return [(text, ansi_fmt(style, active)) for text, style in stored]
         text, spans = self._split_ansi(block.text())
         return self._segments_for(text, spans, pane)
@@ -265,6 +272,10 @@ class LogWindowMixin:
         The single entry point for display text in both windows, so the
         escape handling above cannot be applied inconsistently between them.
         """
+        # Anything real supersedes a provisional tail — including a TX echo or
+        # a reconnect separator, not just the completed line itself. Dropping
+        # it here rather than in _on_new_line is what keeps the two in order.
+        self._drop_pending_partial()
         text, spans = self._split_ansi(line)
         self._raw_pane.append_line(self._segments_for(text, spans, "raw"), scroll=scroll)
         if self._minimap.isVisible():
@@ -275,6 +286,27 @@ class LogWindowMixin:
             )
             if self._filtered_minimap.isVisible():
                 self._filtered_minimap.append_color(self._minimap_color_for(text))
+
+    def _on_partial_line(self, line: str) -> None:
+        """Show the buffer's unterminated tail — typically a shell prompt.
+
+        Raw pane only, and deliberately not counted, filtered or given a
+        minimap band: the line is provisional until its newline arrives, and
+        committing it to the filtered pane would mean retracting it there too
+        if the completed line no longer matched.
+        """
+        text, spans = self._split_ansi(line)
+        segments = self._segments_for(text, spans, "raw")
+        if self._pending_partial:
+            self._raw_pane.replace_last_line(segments)
+        else:
+            self._raw_pane.append_line(segments)
+            self._pending_partial = True
+
+    def _drop_pending_partial(self) -> None:
+        if self._pending_partial:
+            self._pending_partial = False
+            self._raw_pane.drop_last_line()
 
     # ------------------------------------------------------------------
     # Pane rebuilds

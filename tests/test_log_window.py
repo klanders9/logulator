@@ -300,6 +300,7 @@ class _StubWorker:
             pass
 
     new_line = _Sig()
+    partial_line = _Sig()
     error_occurred = _Sig()
     connected = _Sig()
 
@@ -514,6 +515,7 @@ class TestEmptySendEcho:
 ANSI_ERR = "\x1b[1;31m[00:00:05.000,000] <err> modem: init failed: -5\x1b[0m"
 ANSI_TAG = "[00:00:06.000,000] \x1b[1;33m<wrn>\x1b[0m modem: retrying"
 ANSI_SHELL = "\x1b[2J\x1b[Huart:~$ \x1b[Kkernel version"
+PLAIN_WRN = "[00:00:09.000,000] <wrn> app: plain warning"
 
 
 def block_runs(pane, index):
@@ -685,25 +687,38 @@ class TestAnsiRespectsColorizationSettings:
     def _colors(self, pane, index=0):
         return [color for _, color, _ in block_runs(pane, index)]
 
-    def test_disabled_colorization_plainifies_wire_colours(self, win):
+    def test_disabled_colorization_still_renders_wire_colours(self, win):
+        """'Enable colorization' governs logulator's own colouring.
+
+        Turning it off while choosing 'Render colors' is how you say "use the
+        target's colours, not yours" — it must not render plain.
+        """
         win._settings.set_ansi_mode("render")
         win._settings.set_color_enabled(False)
         feed(win, ANSI_TAG)
+        assert "#f1fa8c" in self._colors(win._raw_pane)
+
+    def test_disabled_colorization_still_plainifies_ordinary_lines(self, win):
+        """The other half of the same setting: the colorizer really is off."""
+        win._settings.set_ansi_mode("render")
+        win._settings.set_color_enabled(False)
+        feed(win, PLAIN_WRN)
         assert set(self._colors(win._raw_pane)) == {"#cccccc"}
 
-    def test_re_enabling_colorization_restores_them(self, win):
-        """The style is recorded on the format, not just painted, so the
-        escapes being gone from the document does not make this one-way."""
+    def test_apply_to_round_trips(self, win):
+        """The style is recorded on the format, not just painted, so routing
+        colour away from a pane and back does not lose it — even though the
+        escapes are long gone from the document."""
         win._settings.set_ansi_mode("render")
         feed(win, ANSI_TAG)
         coloured = self._colors(win._raw_pane)
         assert "#f1fa8c" in coloured
 
-        win._settings.set_color_enabled(False)
+        win._settings.set_color_apply_to("filtered")
         win._apply_display_settings()
         assert set(self._colors(win._raw_pane)) == {"#cccccc"}
 
-        win._settings.set_color_enabled(True)
+        win._settings.set_color_apply_to("all")
         win._apply_display_settings()
         assert self._colors(win._raw_pane) == coloured
 
@@ -740,7 +755,7 @@ class TestAnsiRespectsColorizationSettings:
         from PySide6.QtGui import QFont
 
         win._settings.set_ansi_mode("render")
-        win._settings.set_color_enabled(False)
+        win._settings.set_color_apply_to("none")
         feed(win, ANSI_TAG)
         block = win._raw_pane.document().findBlockByNumber(0)
         it = block.begin()
@@ -750,3 +765,89 @@ class TestAnsiRespectsColorizationSettings:
                 weight = fragment.charFormat().fontWeight()
                 assert weight != QFont.Weight.Bold
             it += 1
+
+
+class TestPendingPartialLine:
+    """A shell prompt arrives without a newline and must still be visible.
+
+    It is provisional: shown in place in the raw pane, replaced as it grows,
+    and dropped the moment anything real supersedes it.
+    """
+
+    def test_shown_in_the_raw_pane(self, win):
+        win._on_partial_line("uart:~$ ")
+        assert raw_texts(win) == ["uart:~$ "]
+        assert win._pending_partial is True
+
+    def test_growth_replaces_rather_than_stacks(self, win):
+        win._on_partial_line("uart:~$ ")
+        win._on_partial_line("uart:~$ ver")
+        assert raw_texts(win) == ["uart:~$ ver"]
+
+    def test_completed_line_supersedes_it(self, win):
+        win._on_partial_line("uart:~$ ")
+        win._on_new_line("uart:~$ version")
+        assert raw_texts(win) == ["uart:~$ version"]
+        assert win._pending_partial is False
+
+    def test_it_does_not_swallow_the_line_before_it(self, win):
+        feed(win, "boot done")
+        win._on_partial_line("uart:~$ ")
+        win._on_new_line("uart:~$ version")
+        assert raw_texts(win) == ["boot done", "uart:~$ version"]
+
+    def test_a_tx_echo_supersedes_it_too(self, win):
+        """Dropping only in _on_new_line would leave the echo as the last
+        block, so the next completed line would delete the echo instead."""
+        win._on_partial_line("uart:~$ ")
+        win._record_tx("help")
+        assert raw_texts(win) == [">> help"]
+        win._on_new_line("uart:~$ help")
+        assert raw_texts(win) == [">> help", "uart:~$ help"]
+
+    def test_a_separator_supersedes_it(self, win):
+        win._on_partial_line("uart:~$ ")
+        win._append_separator("--- reconnected ---")
+        assert raw_texts(win) == ["--- reconnected ---"]
+
+    def test_not_counted_as_a_received_line(self, win):
+        """Provisional: the status bar must not tick up for it."""
+        before = win._line_count
+        win._on_partial_line("uart:~$ ")
+        assert win._line_count == before
+        win._on_new_line("uart:~$ version")
+        assert win._line_count == before + 1
+
+    def test_not_committed_to_the_filtered_pane(self, win):
+        """Retracting it there too, if the completed line stopped matching,
+        is complexity the prompt does not justify."""
+        win._rules = [{"type": "substring", "value": "uart", "mode": "include"}]
+        win._filter_mode = "OR"
+        win._filtered_box.show()
+        win._on_partial_line("uart:~$ ")
+        assert doc_line_count(win._filtered_pane) == 0
+        win._on_new_line("uart:~$ version")
+        assert filtered_texts(win) == ["uart:~$ version"]
+
+    def test_escapes_are_stripped_from_it(self, win):
+        win._on_partial_line("\x1b[1;32muart:~$ \x1b[m")
+        assert raw_texts(win) == ["uart:~$ "]
+
+    def test_wire_colour_applies_to_it(self, win):
+        win._settings.set_ansi_mode("render")
+        win._settings.set_color_enabled(False)
+        win._on_partial_line("\x1b[1;32muart:~$ \x1b[m")
+        assert [c for _, c, _ in block_runs(win._raw_pane, 0)] == ["#50fa7b"]
+
+    def test_clear_resets_the_flag(self, win):
+        win._on_partial_line("uart:~$ ")
+        win._on_clear()
+        assert win._pending_partial is False
+        win._on_new_line("first line after clear")
+        assert raw_texts(win) == ["first line after clear"]
+
+    def test_a_lone_pending_line_can_be_dropped(self, win):
+        """drop_last_line on a single-block document must not corrupt it."""
+        win._on_partial_line("uart:~$ ")
+        win._drop_pending_partial()
+        assert doc_line_count(win._raw_pane) == 0
