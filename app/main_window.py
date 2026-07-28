@@ -249,6 +249,7 @@ class MainWindow(LogWindowMixin, QMainWindow):
 
         self._worker = SerialWorker(port, baud, self._log_writer, self._reconnect_options)
         self._worker.new_line.connect(self._on_new_line)
+        self._worker.partial_line.connect(self._on_partial_line)
         self._worker.error_occurred.connect(self._on_serial_error)
         self._worker.connected.connect(self._on_reconnected)
         self._worker.start()
@@ -265,6 +266,10 @@ class MainWindow(LogWindowMixin, QMainWindow):
             self._worker.stop()
             self._worker = None
         self._log_writer.close()
+        # Whatever tail was showing stays on screen — it is real received data
+        # and it is in the log — but it is no longer provisional, so a later
+        # session must not overwrite it.
+        self._pending_partial = False
         self._connect_time = None
         self._serial_panel.set_connected(False)
         self._send_bar.set_connected(False)
@@ -304,6 +309,7 @@ class MainWindow(LogWindowMixin, QMainWindow):
             self._reconnect_options,
         )
         self._worker.new_line.connect(self._on_new_line)
+        self._worker.partial_line.connect(self._on_partial_line)
         self._worker.error_occurred.connect(self._on_serial_error)
         self._worker.connected.connect(self._on_reconnected)
         self._worker.start()
@@ -324,6 +330,8 @@ class MainWindow(LogWindowMixin, QMainWindow):
             self._on_disconnect(prompt_clear=False)
 
     def _append_separator(self, text: str):
+        # A provisional tail from before the drop is superseded by the event.
+        self._drop_pending_partial()
         sep_fmt = _fmt(active_colors()["separator"])
         self._raw_pane.append_line([(text, sep_fmt)])
         if self._minimap.isVisible():
@@ -405,6 +413,7 @@ class MainWindow(LogWindowMixin, QMainWindow):
         self._filtered_minimap.set_cap(cap)
 
     def _on_clear(self):
+        self._pending_partial = False
         self._raw_pane.clear()
         self._minimap.clear()
         if self._filtered_pane.isVisible():

@@ -237,6 +237,43 @@ class LogPane(QTextEdit):
         if scroll and was_at_bottom:
             sb.setValue(sb.maximum())
 
+    def _select_last_block(self, doc) -> QTextCursor:
+        """Cursor selecting the last block's text, without its separator."""
+        cursor = QTextCursor(doc)
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.movePosition(
+            QTextCursor.MoveOperation.StartOfBlock, QTextCursor.MoveMode.KeepAnchor
+        )
+        return cursor
+
+    def replace_last_line(
+        self, segments: List[Tuple[str, QTextCharFormat]], scroll: bool = True
+    ) -> None:
+        """Rewrite the last block in place.
+
+        Used for a provisional line — a shell prompt or other unterminated
+        tail — that grows as more bytes arrive. Appending each revision would
+        stack up partial copies of the same line.
+        """
+        sb = self.verticalScrollBar()
+        was_at_bottom = sb.value() >= sb.maximum() - 4
+
+        cursor = self._select_last_block(self.document())
+        cursor.removeSelectedText()
+        for text, fmt in segments:
+            cursor.insertText(text, fmt)
+
+        if scroll and was_at_bottom:
+            sb.setValue(sb.maximum())
+
+    def drop_last_line(self) -> None:
+        """Remove the last block entirely, separator included."""
+        doc = self.document()
+        cursor = self._select_last_block(doc)
+        cursor.removeSelectedText()
+        if doc.blockCount() > 1:
+            cursor.deletePreviousChar()
+
     def replace_lines(self, segmented_lines) -> None:
         """Rebuild the whole pane from an iterable of segment lists.
 

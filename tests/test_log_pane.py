@@ -213,3 +213,44 @@ class TestTrimBatching:
         elapsed = time.monotonic() - start
         assert pane.document().blockCount() == 1_000
         assert elapsed < 1.0, f"trim took {elapsed:.2f}s"
+
+
+class TestLastLineEditing:
+    """Support for a provisional line that is revised in place."""
+
+    def _texts(self, pane):
+        from app.ui.log_window import iter_block_texts
+
+        return list(iter_block_texts(pane.document()))
+
+    def test_replace_last_line_rewrites_only_that_block(self, pane):
+        pane.append_line([("first", _fmt("#ffffff"))])
+        pane.append_line([("uart:~$ ", _fmt("#ffffff"))])
+        pane.replace_last_line([("uart:~$ ver", _fmt("#ffffff"))])
+        assert self._texts(pane) == ["first", "uart:~$ ver"]
+
+    def test_replace_last_line_on_a_single_block(self, pane):
+        pane.append_line([("uart:~$ ", _fmt("#ffffff"))])
+        pane.replace_last_line([("uart:~$ v", _fmt("#ffffff"))])
+        assert self._texts(pane) == ["uart:~$ v"]
+
+    def test_drop_last_line_removes_the_separator_too(self, pane):
+        pane.append_line([("first", _fmt("#ffffff"))])
+        pane.append_line([("second", _fmt("#ffffff"))])
+        pane.drop_last_line()
+        assert self._texts(pane) == ["first"]
+        assert doc_line_count(pane) == 1
+
+    def test_drop_last_line_on_a_single_block_empties_the_pane(self, pane):
+        """Deleting the separator of the only block would eat the block before
+        it, and there isn't one."""
+        pane.append_line([("only", _fmt("#ffffff"))])
+        pane.drop_last_line()
+        assert doc_line_count(pane) == 0
+
+    def test_append_after_a_drop_does_not_leave_a_blank(self, pane):
+        pane.append_line([("first", _fmt("#ffffff"))])
+        pane.append_line([("provisional", _fmt("#ffffff"))])
+        pane.drop_last_line()
+        pane.append_line([("real", _fmt("#ffffff"))])
+        assert self._texts(pane) == ["first", "real"]

@@ -68,7 +68,18 @@ handle.
 
 ### `app/serial_worker.py` — `SerialWorker(QThread)`
 Reads bytes from the serial port, appends raw bytes to `LogWriter`, then
-splits on `\n` and emits `new_line(str)` per line. Strips trailing `\r`
+splits on `\n` and emits `new_line(str)` per line.
+
+`partial_line(str)` carries the buffer's **unterminated tail** once the port
+has been quiet for `_PARTIAL_IDLE_READS` (2) empty reads, ~0.2 s. A Zephyr
+shell prompt (`uart:~$ `) has no trailing newline, so waiting for one meant
+the prompt only appeared when the *next* line arrived — one press of Enter
+behind, which reads as a target that has stopped responding. The signal is
+provisional: re-emitted as the tail grows (skipped when unchanged, so idling
+does not spam it), reset when the newline finally arrives and the whole line
+goes out on `new_line`. Receivers must show it in place, not accumulate it.
+Targets that always terminate their lines never trigger it — the buffer is
+empty at idle. Strips trailing `\r`
 before decoding — Zephyr UART output uses `\r\n` and the bare `\r` would
 cause blank lines in the display panes. Emits `connected()` immediately after
 the serial port opens (used by auto-reconnect to confirm reconnect succeeded),
@@ -190,6 +201,13 @@ here to avoid circular imports. Key contents:
     configurable cap by trimming the oldest block when `document().blockCount()`
     exceeds `self._cap`. Smart scroll: only scrolls to bottom if the pane was
     already at the bottom before the insert.
+  - `replace_last_line(segments)` rewrites the last block in place and
+    `drop_last_line()` removes it, separator included — used for the
+    provisional tail from `SerialWorker.partial_line`, which would otherwise
+    stack up partial copies of the same line. Both go through
+    `_select_last_block()`, which selects End→StartOfBlock so the block
+    separator is left alone; `drop_last_line` then deletes it explicitly, and
+    only when there is a preceding block to keep.
   - `set_cap(n)` updates `self._cap` and immediately trims from the top.
     Default `_DEFAULT_CAP = 100_000`.
   - `_trim_to_cap(doc)` removes all excess blocks in **one** extended
@@ -617,11 +635,16 @@ windows cannot drift:
   Called **once** per line, and everything downstream (panes, `filter_engine`,
   minimap, find bar) works off the returned text, so escapes are removed
   exactly once and nothing else has to know they existed.
-- `_colorization_active(pane) -> bool` — the single gate over
-  `color_enabled()` and `color_apply_to()`. Both the colorizer and the
-  escape-sequence painter go through it; wire colours used to bypass it, so
-  "Enable colorization" off and "Apply to: raw only" both leaked colour onto
-  lines carrying escapes.
+- `_pane_shows_color(pane) -> bool` — `color_apply_to()` routing alone.
+  `_colorization_active(pane)` is that **and** `color_enabled()`.
+
+  The colorizer uses `_colorization_active`; wire colours use
+  `_pane_shows_color`. The split is deliberate: "Enable colorization" governs
+  logulator's own level/syntax colouring, so turning it off while choosing
+  "Render colors" is the natural way to say "use the target's colours, not
+  yours" — gating both on one flag made that combination render plain.
+  "Apply to" is different: it routes colour to a pane, so it applies to
+  either source.
 - `_segments_for(text, spans, pane)` — wire colours win for the lines that
   carry them, otherwise `_get_segments()`. Per-line rather than a global mode
   flip: mixed output is normal (a bootloader prints plain, the app colours),
@@ -632,11 +655,19 @@ windows cannot drift:
   gate, but **only while `ansi_mode` is still `'render'`**, so switching away
   releases those lines to the colorizer. Otherwise it re-splits the block
   text, which is what makes turning stripping *on* clean up lines already on
-  screen. Toggling colorization or apply-to is reversible for these lines
-  because the style is stored, not inferred from what is painted; changing
-  `ansi_mode` away from `'render'` is not, since the escapes are no longer in
-  the document. All of it reaches here through `settings_changed` →
-  `_apply_display_settings()`.
+  screen. Changing apply-to is reversible for these lines because the style is
+  stored, not inferred from what is painted; changing `ansi_mode` away from
+  `'render'` is not, since the escapes are no longer in the document. All of
+  it reaches here through `settings_changed` → `_apply_display_settings()`.
+- `_on_partial_line(text)` / `_drop_pending_partial()` and the
+  `_pending_partial` flag — display for `SerialWorker.partial_line`. The tail
+  is appended to the **raw pane only** and replaced in place as it grows; it
+  is not counted, filtered or given a minimap band, because committing a
+  provisional line to the filtered pane would mean retracting it there if the
+  completed line no longer matched. `_append_display_line` drops it first, so
+  a TX echo or a reconnect separator supersedes it as correctly as the
+  completed line does — dropping only in `_on_new_line` would leave an echo as
+  the last block and delete *that* on the next line.
 
 ### `app/ui/file_viewer.py` — `FileViewer(QMainWindow)`
 Standalone log file viewer. Multiple instances may coexist; none are parented

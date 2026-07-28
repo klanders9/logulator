@@ -29,6 +29,13 @@ _STOPBITS_MAP = {
 # margin covers a port open that is still in progress.
 _STOP_TIMEOUT_MS = 3000
 
+# Consecutive empty reads (0.1 s each) before an unterminated tail is shown.
+# A shell prompt has no trailing newline, so waiting for one meant the prompt
+# only appeared once the *next* line arrived — a press of Enter behind, which
+# reads as an unresponsive target. Two reads is ~0.2 s: fast enough to feel
+# immediate, slow enough not to chop a line still trickling in at 9600 baud.
+_PARTIAL_IDLE_READS = 2
+
 # Workers that outlived their stop() deadline. Holding a reference keeps Python
 # from destroying a QThread that is still running, which would crash.
 _orphans = set()
@@ -36,6 +43,11 @@ _orphans = set()
 
 class SerialWorker(QThread):
     new_line = Signal(str)
+    # The buffer's unterminated tail, once it has gone quiet. Provisional: it
+    # is re-emitted as it grows and superseded by new_line when the newline
+    # finally arrives, so the receiver must show it in place rather than
+    # accumulate it.
+    partial_line = Signal(str)
     error_occurred = Signal(str)
     connected = Signal()
 
@@ -95,6 +107,8 @@ class SerialWorker(QThread):
     def run(self):
         self._running = True
         buf = b""
+        idle = 0
+        shown = None  # last tail handed to partial_line, to avoid repeats
         try:
             with self._make_serial() as ser:
                 self.connected.emit()
@@ -102,14 +116,23 @@ class SerialWorker(QThread):
                     self._drain_tx(ser)
                     chunk = ser.read(ser.in_waiting or 1)
                     if chunk:
+                        idle = 0
                         self._log_writer.write(chunk)
                         buf += chunk
                         while b"\n" in buf:
                             line, buf = buf.split(b"\n", 1)
+                            shown = None
                             # Strip \r so Windows-style \r\n endings don't cause
                             # blank lines in the display.
                             self.new_line.emit(
                                 line.rstrip(b"\r").decode("utf-8", errors="replace")
+                            )
+                    else:
+                        idle += 1
+                        if buf and idle >= _PARTIAL_IDLE_READS and buf != shown:
+                            shown = buf
+                            self.partial_line.emit(
+                                buf.rstrip(b"\r").decode("utf-8", errors="replace")
                             )
         except serial.SerialException as exc:
             self.error_occurred.emit(str(exc))

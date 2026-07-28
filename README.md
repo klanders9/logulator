@@ -16,6 +16,7 @@ A cross-platform desktop GUI for monitoring and filtering serial log output.
 - Double-click a line in the filtered pane to jump to and select it in the raw pane
 - Send characters out the serial port with the TX bar (Enter to send, ↑/↓ history, CRLF/LF/CR/None line ending); sent lines are echoed to the display and recorded in the session log with a `>> ` marker
 - Pressing Enter on an empty send field transmits a bare line ending (handy for nudging a wedged prompt); the empty `>> ` echo is suppressed by default and can be re-enabled under **⚙ Settings → Sent data**
+- Unterminated output — a shell prompt like `uart:~$ ` with no trailing newline — appears as soon as the port goes quiet, instead of waiting for the next line to arrive
 - Control keys go straight to the port: **Ctrl+C** sends `^C` to interrupt the target, Escape sends `^[`, and Ctrl+A–Z cover the rest — sent immediately, with no line ending appended
 - Advanced serial configuration (data bits, parity, stop bits, flow control, initial DTR/RTS state) via the config dialog next to the port selector
 - Auto-reconnect: automatically retries the connection after an unexpected disconnect, preserving the log file and display

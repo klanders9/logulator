@@ -322,3 +322,69 @@ class TestPortConfiguration:
         monkeypatch.setattr(serial, "Serial", Probe)
         SerialWorker("/dev/fake", 9600, RecordingLogWriter(), {"dtr": False})._make_serial()
         assert seen["dtr"] is False
+
+
+def run_worker_until_idle(monkeypatch, qapp, fake, settle=0.6):
+    """Run a worker and keep pumping past the last chunk, so the idle path runs."""
+    worker = SerialWorker("/dev/fake", 115200, RecordingLogWriter())
+    monkeypatch.setattr(worker, "_make_serial", lambda: fake)
+
+    lines, partials = [], []
+    worker.new_line.connect(lines.append)
+    worker.partial_line.connect(partials.append)
+
+    worker.start()
+    deadline = time.monotonic() + settle
+    while time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.005)
+    worker.stop()
+    qapp.processEvents()
+    return lines, partials
+
+
+class TestPartialLines:
+    """A shell prompt has no trailing newline.
+
+    Waiting for one meant it only surfaced when the *next* line arrived — one
+    press of Enter behind, which reads as a target that isn't responding.
+    """
+
+    def test_unterminated_tail_is_emitted_once_idle(self, qapp, monkeypatch):
+        fake = FakeSerial([b"boot done\r\nuart:~$ "])
+        lines, partials = run_worker_until_idle(monkeypatch, qapp, fake)
+        assert lines == ["boot done"]
+        assert partials[-1] == "uart:~$ "
+
+    def test_not_also_emitted_as_a_complete_line(self, qapp, monkeypatch):
+        """new_line stays the 'this line is final' signal."""
+        fake = FakeSerial([b"uart:~$ "])
+        lines, _partials = run_worker_until_idle(monkeypatch, qapp, fake)
+        assert lines == []
+
+    def test_repeated_while_the_tail_is_unchanged(self, qapp, monkeypatch):
+        """Idling forever must not re-emit the same tail over and over."""
+        fake = FakeSerial([b"uart:~$ "])
+        _lines, partials = run_worker_until_idle(monkeypatch, qapp, fake, settle=0.9)
+        assert partials == ["uart:~$ "]
+
+    def test_reemitted_as_the_tail_grows(self, qapp, monkeypatch):
+        fake = FakeSerial([b"uart:~$ ", b"", b"", b"ver"])
+        _lines, partials = run_worker_until_idle(monkeypatch, qapp, fake)
+        assert partials == ["uart:~$ ", "uart:~$ ver"]
+
+    def test_completing_the_line_supersedes_the_tail(self, qapp, monkeypatch):
+        fake = FakeSerial([b"uart:~$ ", b"", b"", b"version\r\n"])
+        lines, partials = run_worker_until_idle(monkeypatch, qapp, fake)
+        assert partials == ["uart:~$ "]
+        assert lines == ["uart:~$ version"]
+
+    def test_nothing_emitted_when_the_buffer_is_empty(self, qapp, monkeypatch):
+        fake = FakeSerial([b"whole line\r\n"])
+        _lines, partials = run_worker_until_idle(monkeypatch, qapp, fake)
+        assert partials == []
+
+    def test_trailing_cr_is_stripped(self, qapp, monkeypatch):
+        fake = FakeSerial([b"progress\r"])
+        _lines, partials = run_worker_until_idle(monkeypatch, qapp, fake)
+        assert partials == ["progress"]
