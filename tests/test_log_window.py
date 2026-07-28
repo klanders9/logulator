@@ -673,3 +673,80 @@ class TestAnsiInFileViewer:
             assert block_runs(v._raw_pane, 0)[1][1] == "#f1fa8c"
         finally:
             v.close()
+
+
+class TestAnsiRespectsColorizationSettings:
+    """Wire colours answer to the same gate the colorizer does.
+
+    Bypassing it meant 'Enable colorization' off still showed firmware colours,
+    and 'Apply to: raw only' leaked them into the filtered pane.
+    """
+
+    def _colors(self, pane, index=0):
+        return [color for _, color, _ in block_runs(pane, index)]
+
+    def test_disabled_colorization_plainifies_wire_colours(self, win):
+        win._settings.set_ansi_mode("render")
+        win._settings.set_color_enabled(False)
+        feed(win, ANSI_TAG)
+        assert set(self._colors(win._raw_pane)) == {"#cccccc"}
+
+    def test_re_enabling_colorization_restores_them(self, win):
+        """The style is recorded on the format, not just painted, so the
+        escapes being gone from the document does not make this one-way."""
+        win._settings.set_ansi_mode("render")
+        feed(win, ANSI_TAG)
+        coloured = self._colors(win._raw_pane)
+        assert "#f1fa8c" in coloured
+
+        win._settings.set_color_enabled(False)
+        win._apply_display_settings()
+        assert set(self._colors(win._raw_pane)) == {"#cccccc"}
+
+        win._settings.set_color_enabled(True)
+        win._apply_display_settings()
+        assert self._colors(win._raw_pane) == coloured
+
+    def test_apply_to_raw_keeps_the_filtered_pane_plain(self, win):
+        win._settings.set_ansi_mode("render")
+        win._settings.set_color_apply_to("raw")
+        win._rules = [{"type": "substring", "value": "modem", "mode": "include"}]
+        win._filter_mode = "OR"
+        win._filtered_box.show()
+        feed(win, ANSI_TAG)
+        assert "#f1fa8c" in self._colors(win._raw_pane)
+        assert set(self._colors(win._filtered_pane)) == {"#cccccc"}
+
+    def test_apply_to_filtered_keeps_the_raw_pane_plain(self, win):
+        win._settings.set_ansi_mode("render")
+        win._settings.set_color_apply_to("filtered")
+        win._rules = [{"type": "substring", "value": "modem", "mode": "include"}]
+        win._filter_mode = "OR"
+        win._filtered_box.show()
+        feed(win, ANSI_TAG)
+        assert set(self._colors(win._raw_pane)) == {"#cccccc"}
+        assert "#f1fa8c" in self._colors(win._filtered_pane)
+
+    def test_stripping_still_happens_with_colorization_off(self, win):
+        """Escapes are noise regardless of colour — the gate is downstream."""
+        win._settings.set_color_enabled(False)
+        feed(win, ANSI_TAG, ANSI_SHELL)
+        assert raw_texts(win) == [
+            "[00:00:06.000,000] <wrn> modem: retrying",
+            "uart:~$ kernel version",
+        ]
+
+    def test_font_flags_are_dropped_when_inactive(self, win):
+        from PySide6.QtGui import QFont
+
+        win._settings.set_ansi_mode("render")
+        win._settings.set_color_enabled(False)
+        feed(win, ANSI_TAG)
+        block = win._raw_pane.document().findBlockByNumber(0)
+        it = block.begin()
+        while not it.atEnd():
+            fragment = it.fragment()
+            if fragment.isValid():
+                weight = fragment.charFormat().fontWeight()
+                assert weight != QFont.Weight.Bold
+            it += 1

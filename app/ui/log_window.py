@@ -32,8 +32,9 @@ from app.ui.filter_bar import FilterBar
 from app.ui.log_pane import (
     _fmt,
     _plain_color,
+    ansi_fmt,
     ansi_segments,
-    block_ansi_segments,
+    block_ansi_styles,
     doc_line_count,
     make_pane,
     pane_with_header,
@@ -191,6 +192,23 @@ class LogWindowMixin:
         text, spans = ansi.parse(line)
         return text, spans if mode == "render" else []
 
+    def _colorization_active(self, pane: str) -> bool:
+        """Whether this pane is currently colorized at all.
+
+        The one gate, shared by the colorizer and the escape-sequence painter.
+        Wire colours used to bypass it, which made "Enable colorization" off
+        and "Apply to: raw only" both leak colour onto lines that carried
+        escapes.
+        """
+        if not self._settings.color_enabled():
+            return False
+        apply_to = self._settings.color_apply_to()
+        if apply_to == "none":
+            return False
+        if apply_to in ("raw", "filtered"):
+            return pane == apply_to
+        return True
+
     def _segments_for(
         self, text: str, spans: list, pane: str
     ) -> List[Tuple[str, QTextCharFormat]]:
@@ -198,24 +216,18 @@ class LogWindowMixin:
 
         Colours off the wire win over the colorizer for the lines that carry
         them; a line with no escapes is unaffected, so a build that colours
-        only its warnings still gets level colouring everywhere else.
+        only its warnings still gets level colouring everywhere else. Both
+        paths answer to _colorization_active().
         """
         if spans:
-            return ansi_segments(text, spans)
+            return ansi_segments(text, spans, self._colorization_active(pane))
         return self._get_segments(text, pane)
 
     def _get_segments(
         self, line: str, pane: str
     ) -> List[Tuple[str, QTextCharFormat]]:
         """Return (text, format) segments. pane is 'raw' or 'filtered'."""
-        if not self._settings.color_enabled():
-            return [(line, self._plain_fmt)]
-        apply_to = self._settings.color_apply_to()
-        if apply_to == "none":
-            return [(line, self._plain_fmt)]
-        if apply_to == "raw" and pane != "raw":
-            return [(line, self._plain_fmt)]
-        if apply_to == "filtered" and pane != "filtered":
+        if not self._colorization_active(pane):
             return [(line, self._plain_fmt)]
         return self._colorizer.colorize(line)
 
@@ -224,19 +236,21 @@ class LogWindowMixin:
     ) -> List[Tuple[str, QTextCharFormat]]:
         """Segments for an existing block during a rebuild.
 
-        Wire colours are preserved as stored rather than recomputed, since the
-        escapes that produced them are no longer in the block text — but only
-        while the user still wants them rendered, so switching the mode away
-        from 'render' releases those lines back to the colorizer.
+        Wire styles are recovered from the stored formats rather than
+        recomputed, since the escapes that produced them are no longer in the
+        block text — but they are re-applied through the current settings, so
+        toggling colorization or apply-to is reversible for these lines too.
+        Switching the mode away from 'render' releases them to the colorizer.
 
         Block text is re-split as well, so turning stripping *on* cleans up
         lines already on screen. The reverse cannot be undone: once an escape
         has been dropped from the document it is only in the session log.
         """
         if self._settings.ansi_mode() == "render":
-            stored = block_ansi_segments(block)
+            stored = block_ansi_styles(block)
             if stored is not None:
-                return stored
+                active = self._colorization_active(pane)
+                return [(text, ansi_fmt(style, active)) for text, style in stored]
         text, spans = self._split_ansi(block.text())
         return self._segments_for(text, spans, pane)
 

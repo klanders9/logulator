@@ -206,19 +206,29 @@ here to avoid circular imports. Key contents:
   - `dragEnterEvent` / `dropEvent` accept local file URL drops and emit
     `file_dropped(Path)`. Text drops fall through to the default QTextEdit
     handler.
-- `ANSI_PROPERTY`, `ansi_fmt(style)`, `ansi_segments(text, spans)`,
-  `block_ansi_segments(block)` — support for painting lines from escape
+- `ANSI_PROPERTY` / `ANSI_COLOR_PROPERTY` / `ANSI_FLAGS_PROPERTY`,
+  `ansi_fmt(style, active=True)`, `ansi_segments(text, spans, active=True)`,
+  `block_ansi_styles(block)` — support for painting lines from escape
   sequences. `ansi_fmt` sets foreground plus the three font flags and **never**
   family or point size, so the sidebar's font-size control still applies to
-  these lines; it tags the format with `ANSI_PROPERTY` (a
-  `QTextFormat.Property.UserProperty` offset). The tag is what lets a rebuild
-  tell a wire-coloured run from a colorizer-coloured one: rebuilds re-colorize
-  from block text, which no longer holds the escapes, so without it the wire
+  these lines.
+
+  The three properties (offsets from `QTextFormat.Property.UserProperty`) tag
+  the run and record the wire style. The tag is what lets a rebuild tell a
+  wire-coloured run from a colorizer-coloured one: rebuilds re-colorize from
+  block text, which no longer holds the escapes, so without it the wire
   colours would be lost the first time a theme or filter change fired.
-  `QTextCharFormat` is a value type stored per character run, so the tag
-  survives being copied into the rebuilt document — no `QTextBlockUserData`
-  ownership questions. `block_ansi_segments` walks a block's fragments and
-  returns them verbatim if **any** carries the tag, else `None`.
+  `QTextCharFormat` is a value type stored per character run, so all three
+  survive being copied into the rebuilt document — no `QTextBlockUserData`
+  ownership questions.
+
+  The style is **recorded as well as painted** so that `active=False` (the
+  pane isn't colorized right now) displays plain without destroying it;
+  reading the colour back off the foreground instead would make turning
+  colorization off a one-way trip for these lines. `block_ansi_styles` walks a
+  block's fragments and returns `(text, Style)` runs if **any** carries the
+  tag, else `None` — styles rather than formats, so the caller re-applies
+  current settings through the same path a fresh line takes.
 - `make_pane(font, cap=None) -> LogPane` — factory used by both windows.
 - `doc_line_count(pane) -> int` — displayed line count (0 for an empty
   document; Qt reports blockCount()==1 when empty).
@@ -607,19 +617,26 @@ windows cannot drift:
   Called **once** per line, and everything downstream (panes, `filter_engine`,
   minimap, find bar) works off the returned text, so escapes are removed
   exactly once and nothing else has to know they existed.
+- `_colorization_active(pane) -> bool` — the single gate over
+  `color_enabled()` and `color_apply_to()`. Both the colorizer and the
+  escape-sequence painter go through it; wire colours used to bypass it, so
+  "Enable colorization" off and "Apply to: raw only" both leaked colour onto
+  lines carrying escapes.
 - `_segments_for(text, spans, pane)` — wire colours win for the lines that
   carry them, otherwise `_get_segments()`. Per-line rather than a global mode
   flip: mixed output is normal (a bootloader prints plain, the app colours),
   and a single stray escape early in a boot log must not silently disable
   colourization for the whole session.
-- `_segments_for_block(block, pane)` — the rebuild counterpart. Returns stored
-  wire-coloured runs verbatim (via `block_ansi_segments`) but **only while
-  `ansi_mode` is still `'render'`**, so switching away releases those lines
-  back to the colorizer. Otherwise it re-splits the block text, which is what
-  makes turning stripping *on* clean up lines already on screen. The reverse
-  is not recoverable: once an escape is out of the document it exists only in
-  the session log. A mode change reaches this through
-  `settings_changed` → `_apply_display_settings()`.
+- `_segments_for_block(block, pane)` — the rebuild counterpart. Recovers wire
+  *styles* (via `block_ansi_styles`) and re-applies them through the current
+  gate, but **only while `ansi_mode` is still `'render'`**, so switching away
+  releases those lines to the colorizer. Otherwise it re-splits the block
+  text, which is what makes turning stripping *on* clean up lines already on
+  screen. Toggling colorization or apply-to is reversible for these lines
+  because the style is stored, not inferred from what is painted; changing
+  `ansi_mode` away from `'render'` is not, since the escapes are no longer in
+  the document. All of it reaches here through `settings_changed` →
+  `_apply_display_settings()`.
 
 ### `app/ui/file_viewer.py` — `FileViewer(QMainWindow)`
 Standalone log file viewer. Multiple instances may coexist; none are parented
@@ -1064,9 +1081,9 @@ Implementation complete and tested on macOS. All core features working:
   `FileLoaderWorker` strips `\r\n` / `\r` via `rstrip("\r\n")`.
 - `LogPane` is defined in `app/ui/log_pane.py` (not `main_window.py`) to
   avoid circular imports between `MainWindow` and `FileViewer`.
-- Escape-sequence stripping is one-way within a session. The panes hold the
-  cleaned text, so switching `ansi_mode` to `'off'` or `'render'` affects new
-  lines only — the escapes behind lines already on screen are gone from the
+- Escape *stripping* is one-way within a session; the colorization settings
+  are not. The panes hold the cleaned text, so switching `ansi_mode` to
+  `'off'` or `'render'` affects new lines only — the escapes behind lines already on screen are gone from the
   document. They are still in the session log, so reopening it in the file
   viewer under the new mode shows them. Turning stripping *on* does apply
   retroactively.
