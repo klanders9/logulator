@@ -1031,7 +1031,13 @@ recognized by syntax-mode colorization:
   suite fails once the bug is fixed, which is the prompt to delete the marker.
 
 ## Current Status
-Implementation complete and tested on macOS. All core features working:
+Implementation complete. Developed on macOS and tested against Zephyr
+hardware on Linux; **Windows is untested**. The one place that matters most
+is `_reveal_in_file_manager`'s `explorer /select,` branch in
+`main_window.py` — the branch that was actually wrong before `08ed899`, and
+the only one no one has run. `SendBar._CTRL_MOD` also branches per platform,
+but Windows takes the same side as Linux, which is exercised.
+All core features working:
 - Serial connect/disconnect with per-session timestamped log files
 - Live display in raw pane; filtered pane appears when rules are active
 - Filter types: substring, regex, level, module prefix; AND/OR mode;
