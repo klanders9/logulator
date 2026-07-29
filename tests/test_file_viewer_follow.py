@@ -208,3 +208,48 @@ class TestLifecycle:
         worker = v._worker
         v.close()
         assert worker.wait(5000), "loader must stop promptly after cancel"
+
+
+class TestReplacedLoaderGoesQuiet:
+    """A cancelled loader must not deliver into the document that replaced it.
+
+    cancel() only sets a flag checked between lines, so emits already queued
+    for the GUI thread still arrive — and the slots have no idea which worker
+    sent them. Two truncations in quick succession is the reachable case.
+    """
+
+    def test_the_old_loader_is_disconnected_on_reload(self, viewer):
+        old = viewer._worker
+        viewer._restart_follow_after_truncation()
+        assert viewer._worker is not old
+        # A queued chunk from the cancelled loader must land nowhere.
+        before = raw_texts(viewer)
+        old.chunk_ready.emit(["stale line from the previous pass"])
+        assert raw_texts(viewer) == before
+
+    def test_a_late_load_complete_does_not_move_follow_pos(self, viewer):
+        """It would otherwise seek past what the new loader is still emitting,
+        silently skipping content in follow mode."""
+        old = viewer._worker
+        viewer._restart_follow_after_truncation()
+        viewer._follow_pos = 0
+        old.load_complete.emit(9999)
+        assert viewer._follow_pos == 0
+        assert viewer._total_lines != 9999
+
+    def test_a_late_error_shows_no_dialog(self, viewer, monkeypatch):
+        from app.ui import file_viewer as mod
+
+        shown = []
+        monkeypatch.setattr(
+            mod.QMessageBox, "critical", lambda *a, **k: shown.append(a)
+        )
+        old = viewer._worker
+        viewer._restart_follow_after_truncation()
+        old.error_occurred.emit("stale failure")
+        assert shown == []
+
+    def test_the_new_loader_is_still_wired(self, viewer):
+        viewer._restart_follow_after_truncation()
+        viewer._worker.chunk_ready.emit(["fresh line"])
+        assert "fresh line" in raw_texts(viewer)

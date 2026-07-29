@@ -4,6 +4,7 @@
 Adds chunked background loading, tail/follow mode and an inline find bar on top
 of the shared pane/filter/minimap behaviour in `LogWindowMixin`."""
 
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -145,7 +146,34 @@ class FileViewer(LogWindowMixin, QMainWindow):
     # File loading
     # ------------------------------------------------------------------
 
+    def _detach_worker(self) -> None:
+        """Disconnect the current loader, so a replaced one goes quiet.
+
+        `cancel()` only sets a flag the worker checks between lines, so emits
+        already queued for the GUI thread still deliver — and the slots have
+        no idea which worker sent them. A second truncation arriving while the
+        first reload is still streaming would splice the old worker's chunks
+        into the new document, and its `load_complete` would overwrite
+        `_follow_pos` with an offset belonging to the wrong pass.
+        """
+        if self._worker is None:
+            return
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            for signal, slot in (
+                (self._worker.chunk_ready, self._on_chunk_ready),
+                (self._worker.load_complete, self._on_load_complete),
+                (self._worker.error_occurred, self._on_load_error),
+            ):
+                try:
+                    signal.disconnect(slot)
+                except (RuntimeError, TypeError):
+                    pass
+
     def _start_load(self) -> None:
+        # Every reload replaces self._worker, so detaching here covers the
+        # truncation restart and anything added later.
+        self._detach_worker()
         self._loading = True
         self._worker = FileLoaderWorker(self._path)
         self._worker.chunk_ready.connect(self._on_chunk_ready)
