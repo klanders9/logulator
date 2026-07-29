@@ -93,11 +93,25 @@ applies filters.
 is bounded because it runs on the GUI thread and `_make_serial()` can block in
 `open()` on a wedged USB device. A thread that misses the deadline is
 **abandoned, not terminated** — `QThread.terminate()` on a thread executing
-Python can leave the GIL held and wedge the process. Abandoning is safe:
-`_running` is already `False`, so once the blocking `open()` returns the loop
-body never executes, and the thread closes the port and exits without touching
-the log or emitting lines. Module-level `_orphans` holds a reference until
-`finished` fires, because destroying a running `QThread` crashes.
+Python can leave the GIL held and wedge the process. Module-level `_orphans`
+holds a reference until `finished` fires, because destroying a running
+`QThread` crashes.
+
+Abandoning is only safe once the worker can no longer be heard from, so
+`stop()` calls `_detach_signals()` on the timeout path. `_running` being
+`False` silences `new_line` and `partial_line`, which are emitted inside the
+run loop — but **not** `connected` (emitted the moment the port opens, before
+the loop) or `error_occurred` (emitted from the `except` handlers). The
+typical reason a worker misses its deadline is a wedged `open()`, which
+eventually raises, so the one case this path exists for is also the case that
+fires a late signal. `MainWindow` slots resolve `self._worker` when the signal
+*arrives*, not when it was connected, so a late `error_occurred` from an
+abandoned worker used to run `_on_serial_error` against whatever session was
+live by then — tearing down a healthy connection and, with auto-reconnect off,
+showing a modal error naming a port the user had left. `finished` stays
+connected; the orphan bookkeeping needs it. A signal with no receivers only
+*warns* rather than raising, so the warning is suppressed rather than caught
+(`QObject.receivers()` takes a signature string in PySide6, not a signal).
 
 Constructor takes an optional `options` dict: `databits` (5–8), `parity`
 (`'N'/'E'/'O'/'M'/'S'`), `stopbits` (`'1'/'1.5'/'2'`), `flow`
@@ -695,6 +709,15 @@ class-level `_instances` list — every instance adds itself on init and removes
 itself on close, so viewers survive even if no `MainWindow` holds a reference.
 
 **Loading:** `FileLoaderWorker` streams the file in 2,000-line chunks.
+`_start_load()` begins with `_detach_worker()`, which disconnects the previous
+loader's three signals. `cancel()` only sets a flag the worker checks between
+lines, so emits already queued for the GUI thread still deliver, and the slots
+carry no sender identity — a second truncation arriving while the first reload
+was still streaming would splice the old worker's chunks into the new document
+and let its `load_complete` overwrite `_follow_pos` with an offset from the
+wrong pass, silently skipping content in follow mode. Detaching in
+`_start_load()` rather than in `_restart_follow_after_truncation()` covers
+every reload path, including any added later.
 `_on_chunk_ready` appends to `_raw_pane` (and to `_filtered_pane` if rules
 are active). `_on_load_complete` records `_follow_pos = path.stat().st_size`,
 scrolls both panes to the bottom, then triggers a full filtered-pane rebuild
