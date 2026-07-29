@@ -6,13 +6,18 @@ A cross-platform desktop GUI for monitoring and filtering serial log output.
 
 - Live serial port monitoring with configurable baud rate
 - All bytes written to a timestamped log file — unmodified, regardless of active filters
+- Session logs go to `~/logs` by default; change the directory under **⚙ Settings → Logging**
 - Filter display by substring, regex, log level (`<dbg>` `<inf>` `<wrn>` `<err>`), or module name
 - Include and exclude rules, combinable with AND/OR logic
 - Configurable rolling display buffer (default 100,000 lines; log file retains everything)
 - Syntax colorization with configurable per-level and per-field colors; understands Zephyr, syslog (traditional and ISO 8601), and generic keyword-based severity detection
+- ANSI/VT100 escape sequences from the target are handled like a terminal would: colors, cursor moves and erases are applied rather than printed, so a shell that wipes and redraws its prompt around each log message doesn't leave the prompt stuck to every line. Default is **Strip** (render the text, drop the colors, so logulator's own colorization and module filtering apply); **Render colors** honors the target's colors instead, **Show raw** shows the escape characters. Under **⚙ Settings → Display → Escape sequences**; the session log always keeps the raw bytes
 - Smart scroll: auto-scrolls to new output only when already at the bottom
 - Double-click a line in the filtered pane to jump to and select it in the raw pane
 - Send characters out the serial port with the TX bar (Enter to send, ↑/↓ history, CRLF/LF/CR/None line ending); sent lines are echoed to the display and recorded in the session log with a `>> ` marker
+- Pressing Enter on an empty send field transmits a bare line ending (handy for nudging a wedged prompt); the empty `>> ` echo is suppressed by default and can be re-enabled under **⚙ Settings → Sent data**
+- Unterminated output — a shell prompt like `uart:~$ ` with no trailing newline — appears as soon as the port goes quiet, instead of waiting for the next line to arrive
+- Control keys go straight to the port: **Ctrl+C** sends `^C` to interrupt the target, Escape sends `^[`, and Ctrl+A–Z cover the rest — sent immediately, with no line ending appended
 - Advanced serial configuration (data bits, parity, stop bits, flow control, initial DTR/RTS state) via the config dialog next to the port selector
 - Auto-reconnect: automatically retries the connection after an unexpected disconnect, preserving the log file and display
 - Multiple serial connection windows: **New Window** toolbar button opens an additional independent monitor on any port
@@ -25,7 +30,7 @@ A cross-platform desktop GUI for monitoring and filtering serial log output.
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.9+
 - PySide6 6.7+
 - pyserial 3.5+
 
@@ -41,11 +46,11 @@ python main.py
 ## Usage
 
 1. Select a serial port and baud rate, then click **Connect**
-2. Log output streams into the display area and is written to `logs/session_YYYYMMDD_HHMMSS.log`
+2. Log output streams into the display area and is written to `~/logs/session_YYYYMMDD_HHMMSS.log`
 3. Add filter rules using the filter bar:
    - **substring** — plain text match anywhere in the line
    - **regex** — Python regular expression
-   - **level** — matches a `<dbg>`, `<inf>`, `<wrn>`, or `<err>` tag in the line
+   - **level** — pick `err`/`wrn`/`inf`/`dbg` from the dropdown; matches the Zephyr tag *or* the equivalent keyword (`warning`, `fatal`, …), so it works on syslog and unstructured logs too
    - **module** — prefix-matches the module field (e.g. `bt_hci` matches `bt_hci_core`)
 4. Choose **include** or **exclude** per rule, and toggle **AND/OR** to control how include rules combine
 5. Click **Disconnect** or close the window to end the session
@@ -56,7 +61,7 @@ To view a saved log file, use **File → Open Log File…** (Ctrl+O), drag a fil
 
 ## Log files
 
-Session logs are saved under `logs/` and are never filtered or truncated by the UI. They are the source of truth for all captured output.
+Session logs are saved under `~/logs` (configurable in **⚙ Settings → Logging**) and are never filtered or truncated by the UI. They are the source of truth for all captured output. Each connection gets its own file — reconnecting never appends to a previous session's log.
 
 ## Linux desktop integration (Ubuntu / GNOME)
 

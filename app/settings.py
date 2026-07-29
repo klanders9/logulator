@@ -2,6 +2,7 @@
 """QSettings-backed persistent settings for logulator."""
 
 import json
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QByteArray, QSettings
@@ -48,6 +49,23 @@ class AppSettings:
         v = self._qs.value("window/splitter")
         return v if isinstance(v, QByteArray) else None
 
+    # File viewers keep their own geometry, separate from the serial window's:
+    # the two have different layouts and are commonly sized differently.
+
+    def save_viewer_geometry(self, data: QByteArray) -> None:
+        self._qs.setValue("viewer/geometry", data)
+
+    def load_viewer_geometry(self) -> Optional[QByteArray]:
+        v = self._qs.value("viewer/geometry")
+        return v if isinstance(v, QByteArray) else None
+
+    def save_viewer_splitter(self, data: QByteArray) -> None:
+        self._qs.setValue("viewer/splitter", data)
+
+    def load_viewer_splitter(self) -> Optional[QByteArray]:
+        v = self._qs.value("viewer/splitter")
+        return v if isinstance(v, QByteArray) else None
+
     # --- Sidebar ---
 
     def sidebar_open(self) -> bool:
@@ -69,14 +87,16 @@ class AppSettings:
         return v if v in ("level", "syntax") else "level"
 
     def set_color_mode(self, val: str) -> None:
-        self._qs.setValue("color/mode", val)
+        if val in ("level", "syntax"):
+            self._qs.setValue("color/mode", val)
 
     def color_apply_to(self) -> str:
         v = self._qs.value("color/apply_to", "all")
         return v if v in ("all", "raw", "filtered", "none") else "all"
 
     def set_color_apply_to(self, val: str) -> None:
-        self._qs.setValue("color/apply_to", val)
+        if val in ("all", "raw", "filtered", "none"):
+            self._qs.setValue("color/apply_to", val)
 
     def level_color(self, level: str) -> str:
         return self._qs.value(
@@ -93,6 +113,27 @@ class AppSettings:
 
     def set_syntax_color(self, field: str, color: str) -> None:
         self._qs.setValue(f"color/syntax_{field}", color)
+
+    # --- Escape sequences ---
+
+    def ansi_mode(self) -> str:
+        """How ANSI/VT100 escape sequences in incoming lines are displayed.
+
+        'strip'  — remove them (default)
+        'render' — remove them, but paint the colours they asked for
+        'off'    — leave them in the text, escapes and all
+
+        Stripping is the default because escapes are never useful as glyphs
+        and, left in place, they also break the Zephyr syntax regex and module
+        detection, which are both anchored on line structure. This is a display
+        setting only: the session log always records the bytes verbatim.
+        """
+        v = self._qs.value("display/ansi_mode", "strip")
+        return v if v in ("strip", "render", "off") else "strip"
+
+    def set_ansi_mode(self, val: str) -> None:
+        if val in ("strip", "render", "off"):
+            self._qs.setValue("display/ansi_mode", val)
 
     # --- Minimap ---
 
@@ -120,33 +161,27 @@ class AppSettings:
         val = max(self._BUFFER_MIN, min(self._BUFFER_MAX, val))
         self._qs.setValue("buffer/cap", val)
 
-    # --- Filter ---
+    # --- Logging ---
 
-    def filter_rules(self) -> list:
-        v = self._qs.value("filter/rules", "[]")
-        if not isinstance(v, str):
-            return []
-        try:
-            result = json.loads(v)
-            return result if isinstance(result, list) else []
-        except (json.JSONDecodeError, ValueError):
-            return []
+    def log_dir(self) -> str:
+        """Directory that session logs are written to.
 
-    def set_filter_rules(self, rules: list) -> None:
-        self._qs.setValue("filter/rules", json.dumps(rules))
+        Defaults to ~/logs, which resolves the same way however the app was
+        launched. The previous "logs" was relative to the process working
+        directory, so a terminal launch and a desktop-launcher launch wrote to
+        different places. On Windows, Path.home() is C:\\Users\\<username>.
+        """
+        v = self._qs.value("logging/dir", "")
+        if isinstance(v, str) and v.strip():
+            return v
+        return str(Path.home() / "logs")
 
-    def filter_mode(self) -> str:
-        v = self._qs.value("filter/mode", "OR")
-        return v if v in ("AND", "OR") else "OR"
+    def set_log_dir(self, val: str) -> None:
+        """Set the session log directory. An empty value restores the default."""
+        self._qs.setValue("logging/dir", str(val))
 
-    def set_filter_mode(self, mode: str) -> None:
-        self._qs.setValue("filter/mode", mode)
-
-    def filter_bar_open(self) -> bool:
-        return self._qs.value("filter/bar_open", False, type=bool)
-
-    def set_filter_bar_open(self, val: bool) -> None:
-        self._qs.setValue("filter/bar_open", val)
+    # Filter rules are deliberately not persisted — they are per-session view
+    # state in both windows, so there is no filter_* accessor here.
 
     # --- Recent files ---
 
@@ -248,6 +283,20 @@ class AppSettings:
     def set_tx_line_ending(self, val: str) -> None:
         if val in ("none", "lf", "cr", "crlf"):
             self._qs.setValue("tx/line_ending", val)
+
+    def tx_echo_empty(self) -> bool:
+        """Whether a bare Enter (empty send field) is echoed and logged.
+
+        The line ending is transmitted either way — this only controls whether
+        the resulting empty '>> ' marker appears in the pane and the session
+        log. Off by default: an empty marker reads as a glitch rather than an
+        event, and the send field takes focus on connect, so reflexive Enters
+        are common.
+        """
+        return self._qs.value("tx/echo_empty", False, type=bool)
+
+    def set_tx_echo_empty(self, val: bool) -> None:
+        self._qs.setValue("tx/echo_empty", val)
 
     def tx_color(self) -> str:
         return self._qs.value("color/tx", self._TX_DEFAULT)

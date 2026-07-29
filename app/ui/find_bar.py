@@ -4,6 +4,7 @@
 from typing import Optional
 
 from PySide6.QtCore import QEvent, Qt, Signal
+from app.theme import active_colors
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -23,6 +24,9 @@ class FindBar(QWidget):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setVisible(False)
+        # Remembered so restyle() can re-apply the red field after a theme
+        # switch; the style is only set when a search comes up empty.
+        self._no_matches = False
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 2, 6, 2)
@@ -99,17 +103,28 @@ class FindBar(QWidget):
     def get_text(self) -> str:
         return self._input.text()
 
+    def restyle(self) -> None:
+        """Re-apply theme-derived styling after a theme switch."""
+        self._input.setStyleSheet(
+            "QLineEdit { background: %s; }" % active_colors()["error_field"]
+            if self._no_matches else ""
+        )
+
     def set_match_status(self, current: int, total: int, has_query: bool = True):
+        self._no_matches = has_query and total == 0
         if not has_query:
             self._count_label.setText("")
             self._input.setStyleSheet("")
         elif total == 0:
             self._count_label.setText("No matches")
-            self._input.setStyleSheet("QLineEdit { background: #3a0000; }")
+            self._input.setStyleSheet(
+                "QLineEdit { background: %s; }" % active_colors()["error_field"]
+            )
         else:
             self._count_label.setText(f"{current} of {total}")
             self._input.setStyleSheet("")
 
     def clear_status(self):
+        self._no_matches = False
         self._count_label.setText("")
         self._input.setStyleSheet("")

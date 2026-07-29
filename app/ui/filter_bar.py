@@ -1,9 +1,12 @@
 # Copyright (c) 2026 Kevin Landers. SPDX-License-Identifier: MIT
 """Compact filter bar: collapsible input row + horizontal rule chip strip."""
 
+import re
 from typing import Optional
 
 from PySide6.QtCore import QEvent, Qt, Signal
+
+from app.theme import active_colors
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -17,30 +20,49 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from typing import Optional as _Optional
-
-from app.settings import AppSettings
-
-_CHIP_INCLUDE_STYLE = (
-    "QWidget#chip { border: 1px solid #3a6a3a; border-radius: 3px; }"
-)
-_CHIP_EXCLUDE_STYLE = (
-    "QWidget#chip { border: 1px solid #6a3a3a; border-radius: 3px; }"
-)
 _CHIP_LABEL_STYLE = "QLabel { background: transparent; border: none; padding: 0px; }"
-_CHIP_BTN_STYLE = (
-    "QPushButton { color: #888888; background: transparent; border: none;"
-    " padding: 0px; font-size: 11px; min-width: 16px; max-width: 16px;"
-    " min-height: 16px; max-height: 16px; }"
-    "QPushButton:hover { color: #cccccc; }"
-)
+
+
+def _chip_style(mode: str) -> str:
+    key = "chip_include" if mode == "include" else "chip_exclude"
+    return "QWidget#chip { border: 1px solid %s; border-radius: 3px; }" % (
+        active_colors()[key]
+    )
+
+
+def _chip_button_style() -> str:
+    c = active_colors()
+    return (
+        "QPushButton { color: %s; background: transparent; border: none;"
+        " padding: 0px; font-size: 11px; min-width: 16px; max-width: 16px;"
+        " min-height: 16px; max-height: 16px; }"
+        "QPushButton:hover { color: %s; }" % (c["muted_text"], c["plain_text"])
+    )
 
 _TYPE_ABBREV = {"substring": "sub", "regex": "rgx", "level": "lvl", "module": "mod"}
 
+# (rule value, dropdown label). The label names the Zephyr tag and the words
+# the keyword fallback recognises, so what a level rule actually selects is
+# visible without reading the source.
+_LEVEL_CHOICES = [
+    ("err", "err — <err>, error, fatal, critical"),
+    ("wrn", "wrn — <wrn>, warning, warn"),
+    ("inf", "inf — <inf>, info, notice"),
+    ("dbg", "dbg — <dbg>, debug, trace"),
+]
+
+# What the free-text box is asking for, per rule type.
+_PLACEHOLDERS = {
+    "substring": "Text to match…",
+    "regex": "Regular expression…",
+    "module": "Module name or prefix…",
+}
 
 def _chip_label_text(rule: dict) -> str:
     prefix = "+" if rule.get("mode", "include") == "include" else "−"
     t = _TYPE_ABBREV.get(rule["type"], rule["type"][:3])
+    if rule.get("ignore_case"):
+        t += "/i"
     v = rule["value"]
     if len(v) > 20:
         v = v[:17] + "…"
@@ -53,12 +75,7 @@ class _RuleChip(QWidget):
     def __init__(self, rule: dict, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setObjectName("chip")
-        style = (
-            _CHIP_INCLUDE_STYLE
-            if rule.get("mode", "include") == "include"
-            else _CHIP_EXCLUDE_STYLE
-        )
-        self.setStyleSheet(style)
+        self.setStyleSheet(_chip_style(rule.get("mode", "include")))
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(5, 1, 2, 1)
@@ -69,7 +86,7 @@ class _RuleChip(QWidget):
         layout.addWidget(label)
 
         btn = QPushButton("×")
-        btn.setStyleSheet(_CHIP_BTN_STYLE)
+        btn.setStyleSheet(_chip_button_style())
         btn.clicked.connect(lambda _: self.remove_clicked.emit())
         layout.addWidget(btn)
 
@@ -80,21 +97,13 @@ class FilterBar(QWidget):
     filters_changed = Signal(list, str)  # (rules, mode)
     input_bar_closed = Signal()  # emitted when Escape dismisses the input bar
 
-    def __init__(
-        self,
-        settings: _Optional[AppSettings] = None,
-        parent: Optional[QWidget] = None,
-    ):
+    def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self._settings = settings
-        if settings is not None:
-            self._rules: list = settings.filter_rules()
-            self._mode: str = settings.filter_mode()
-            _input_bar_open = settings.filter_bar_open()
-        else:
-            self._rules = []
-            self._mode = "OR"
-            _input_bar_open = False
+        # Rules are per-session view state in both windows — nothing here is
+        # persisted, so the bar starts empty and closed every time.
+        self._rules: list = []
+        self._mode: str = "OR"
+        _input_bar_open = False
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -107,15 +116,34 @@ class FilterBar(QWidget):
         ir.setSpacing(4)
 
         self._input = QLineEdit()
-        self._input.setPlaceholderText("Filter value…")
         self._input.returnPressed.connect(self._add_rule)
+        self._input.textEdited.connect(lambda _text: self._clear_input_error())
         self._input.installEventFilter(self)
+
+        # Level rules take one of four fixed keys, so they get a dropdown
+        # rather than the free-text box: typing "warning", "<wrn>" or "warn"
+        # all silently matched nothing, and only the internal key "wrn" worked.
+        # The labels double as documentation for the keyword fallback, which
+        # is what makes level rules work on syslog and unstructured logs.
+        self._level_combo = QComboBox()
+        for key, label in _LEVEL_CHOICES:
+            self._level_combo.addItem(label, key)
+        self._level_combo.setVisible(False)
 
         self._type_combo = QComboBox()
         self._type_combo.addItems(["substring", "regex", "level", "module"])
+        self._type_combo.currentTextChanged.connect(self._on_type_changed)
 
         self._inc_exc_combo = QComboBox()
         self._inc_exc_combo.addItems(["include", "exclude"])
+
+        self._case_btn = QPushButton("Aa")
+        self._case_btn.setCheckable(True)
+        self._case_btn.setChecked(True)
+        self._case_btn.setFixedWidth(34)
+        self._case_btn.setToolTip(
+            "Match case (substring and regex rules)"
+        )
 
         self._mode_btn = QPushButton(f"Mode: {self._mode}")
         self._mode_btn.setCheckable(True)
@@ -127,10 +155,16 @@ class FilterBar(QWidget):
         add_btn.clicked.connect(self._add_rule)
 
         ir.addWidget(self._input, stretch=1)
+        ir.addWidget(self._level_combo, stretch=1)
         ir.addWidget(self._type_combo)
         ir.addWidget(self._inc_exc_combo)
+        ir.addWidget(self._case_btn)
         ir.addWidget(self._mode_btn)
         ir.addWidget(add_btn)
+
+        # currentTextChanged does not fire for the initial index, so set the
+        # editor up for the starting rule type explicitly.
+        self._on_type_changed(self._type_combo.currentText())
 
         self._input_row.setVisible(_input_bar_open)
         self._input_open = _input_bar_open
@@ -175,8 +209,6 @@ class FilterBar(QWidget):
     def _close_input_bar(self):
         self._input_row.setVisible(False)
         self._input_open = False
-        if self._settings is not None:
-            self._settings.set_filter_bar_open(False)
         self.input_bar_closed.emit()
 
     # ---- Public API ----
@@ -191,8 +223,6 @@ class FilterBar(QWidget):
         else:
             self._input_row.setVisible(True)
             self._input_open = True
-            if self._settings is not None:
-                self._settings.set_filter_bar_open(True)
             self._input.setFocus()
             self._input.selectAll()
 
@@ -207,18 +237,70 @@ class FilterBar(QWidget):
 
     # ---- Internal rule management ----
 
+    def _on_type_changed(self, rule_type: str) -> None:
+        """Swap the value editor to suit the rule type."""
+        is_level = rule_type == "level"
+        self._input.setVisible(not is_level)
+        self._level_combo.setVisible(is_level)
+        self._input.setPlaceholderText(_PLACEHOLDERS.get(rule_type, ""))
+        # Case sensitivity only applies to substring and regex; level keys are
+        # fixed and module names are matched as written.
+        self._case_btn.setEnabled(rule_type in ("substring", "regex"))
+        self._clear_input_error()
+        if not is_level:
+            self._input.setFocus()
+
     def _add_rule(self):
+        rule_type = self._type_combo.currentText()
+        if rule_type == "level":
+            self._rules.append({
+                "type": "level",
+                "value": self._level_combo.currentData(),
+                "mode": self._inc_exc_combo.currentText(),
+                "ignore_case": False,
+            })
+            self._commit()
+            return
+
         value = self._input.text().strip()
         if not value:
             return
+        if rule_type == "regex":
+            # filter_engine returns False for an unparseable pattern, so an
+            # unvalidated include silently emptied the filtered pane and an
+            # unvalidated exclude silently stopped excluding. Both looked like
+            # the filter was broken rather than the pattern.
+            try:
+                re.compile(value)
+            except re.error as exc:
+                self._show_input_error(f"Invalid regular expression: {exc}")
+                return
+        self._clear_input_error()
         rule = {
-            "type": self._type_combo.currentText(),
+            "type": rule_type,
             "value": value,
             "mode": self._inc_exc_combo.currentText(),
+            "ignore_case": not self._case_btn.isChecked(),
         }
         self._rules.append(rule)
         self._input.clear()
         self._commit()
+
+    def restyle(self) -> None:
+        """Re-apply theme-derived styling after a theme switch."""
+        self._rebuild_chips()
+        if self._input.toolTip():
+            self._show_input_error(self._input.toolTip())
+
+    def _show_input_error(self, message: str) -> None:
+        self._input.setStyleSheet(
+            "QLineEdit { background: %s; }" % active_colors()["error_field"]
+        )
+        self._input.setToolTip(message)
+
+    def _clear_input_error(self) -> None:
+        self._input.setStyleSheet("")
+        self._input.setToolTip("")
 
     def _remove_rule(self, index: int):
         del self._rules[index]
@@ -227,29 +309,42 @@ class FilterBar(QWidget):
     def _on_mode_toggled(self, checked: bool):
         self._mode = "AND" if checked else "OR"
         self._mode_btn.setText(f"Mode: {self._mode}")
-        if self._settings is not None:
-            self._settings.set_filter_mode(self._mode)
         self.filters_changed.emit(list(self._rules), self._mode)
 
     def _commit(self):
-        if self._settings is not None:
-            self._settings.set_filter_rules(self._rules)
         self._rebuild_chips()
         self._chip_scroll.setVisible(bool(self._rules))
         self.filters_changed.emit(list(self._rules), self._mode)
 
-    def add_rule(self, value: str, rule_type: str = "substring", mode: str = "include") -> None:
+    def add_rule(
+        self,
+        value: str,
+        rule_type: str = "substring",
+        mode: str = "include",
+        ignore_case: bool = False,
+    ) -> None:
         """Programmatically add a rule (e.g. from the find bar's 'Filter to matches')."""
-        rule = {"type": rule_type, "value": value, "mode": mode}
+        rule = {
+            "type": rule_type,
+            "value": value,
+            "mode": mode,
+            "ignore_case": ignore_case,
+        }
         self._rules.append(rule)
         self._commit()
 
     def _rebuild_chips(self):
-        # Remove all chips, preserving the trailing stretch (last item)
+        # Remove all chips, preserving the trailing stretch (last item).
         while self._chip_layout.count() > 1:
             item = self._chip_layout.takeAt(0)
             w = item.widget()
             if w:
+                # Unparent before deleteLater(): taking a widget out of a
+                # layout leaves it a child of the container, still painted at
+                # its old geometry until the event loop gets round to the
+                # deferred deletion. It also stops the pending deletion from
+                # outliving the FilterBar that parents it.
+                w.setParent(None)
                 w.deleteLater()
 
         for i, rule in enumerate(self._rules):

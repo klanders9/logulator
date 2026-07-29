@@ -14,10 +14,13 @@ Raw log collection and filtered display are strictly separated:
 - One deliberate extension (user-approved): sent (TX) lines are also recorded
   in the session log, marked with a `>> ` prefix, so the file captures both
   directions of the conversation. TX never modifies or filters RX bytes.
+  A TX record starts a fresh line when the file is mid-line, so the marker is
+  never spliced into a partially received RX line — the newline belongs to the
+  TX extension, and RX bytes are still written verbatim and in order.
 
 ## Tech Stack
-- Python 3.11+ (note: the existing .venv uses Python 3.9 — avoid `X | Y`
-  union syntax in type hints; use `Optional[X]` from typing instead)
+- Python 3.9+ (matches `requires-python` in `pyproject.toml` and the .venv —
+  avoid `X | Y` union syntax in type hints; use `Optional[X]` from typing instead)
 - PySide6 (Qt6 bindings) for GUI — Qt Widgets, not QML
 - pyserial for serial port access
 - No other dependencies without asking first
@@ -40,13 +43,75 @@ session. Append-only, flushes after every write. Exposes `current_path:
 Optional[Path]` for the status bar to read file size. Path is cleared on
 `close()`.
 
+Written from two threads — the serial worker appends RX bytes, the GUI thread
+records TX lines — so a reentrant lock guards every file access. That also
+makes the open/closed check atomic against `close()`; previously a write
+racing a disconnect could raise `ValueError: write to closed file` inside the
+worker. `write_tx_line(text)` is the TX entry point and inserts a leading
+newline when mid-line; `write(data)` appends RX bytes verbatim.
+
+The destination comes from `AppSettings.log_dir()` (default `~/logs`), which
+`MainWindow._on_connect` pushes in via `set_log_dir()` before each session, so
+a change in the sidebar applies to the next connect. Paths are `expanduser()`d.
+If `open_session()` raises `OSError` the connection is refused with a dialog —
+an unlogged session is worse than no session, since the log file is the source
+of truth.
+
+`open_session()` opens the file **exclusively** (`"xb"`) and falls back to
+`session_..._2.log`, `_3.log`, … if the name is taken. The timestamp only has
+one-second resolution, so a disconnect/reconnect inside the same second
+produces the same name; the previous append-mode open silently continued the
+old session's file instead of starting a new one. Exclusive creation also
+means an unrelated pre-existing log can never be appended to or overwritten.
+`open_session()` closes any still-open file first, so re-opening cannot leak a
+handle.
+
 ### `app/serial_worker.py` — `SerialWorker(QThread)`
 Reads bytes from the serial port, appends raw bytes to `LogWriter`, then
-splits on `\n` and emits `new_line(str)` per line. Strips trailing `\r`
+splits on `\n` and emits `new_line(str)` per line.
+
+`partial_line(str)` carries the buffer's **unterminated tail** once the port
+has been quiet for `_PARTIAL_IDLE_READS` (2) empty reads, ~0.2 s. A Zephyr
+shell prompt (`uart:~$ `) has no trailing newline, so waiting for one meant
+the prompt only appeared when the *next* line arrived — one press of Enter
+behind, which reads as a target that has stopped responding. The signal is
+provisional: re-emitted as the tail grows (skipped when unchanged, so idling
+does not spam it), reset when the newline finally arrives and the whole line
+goes out on `new_line`. Receivers must show it in place, not accumulate it.
+Targets that always terminate their lines never trigger it — the buffer is
+empty at idle. Strips trailing `\r`
 before decoding — Zephyr UART output uses `\r\n` and the bare `\r` would
 cause blank lines in the display panes. Emits `connected()` immediately after
 the serial port opens (used by auto-reconnect to confirm reconnect succeeded),
-`error_occurred(str)` on `SerialException`. Never applies filters.
+`error_occurred(str)` on `SerialException` — and on any other exception too,
+prefixed with the type name. A bare `SerialException` handler let an `OSError`
+from `LogWriter` (full disk, unmounted volume) end the thread with no signal,
+leaving the UI showing a connection that had silently stopped reading. Never
+applies filters.
+
+`stop(timeout_ms=3000)` returns whether the thread finished in time. The wait
+is bounded because it runs on the GUI thread and `_make_serial()` can block in
+`open()` on a wedged USB device. A thread that misses the deadline is
+**abandoned, not terminated** — `QThread.terminate()` on a thread executing
+Python can leave the GIL held and wedge the process. Module-level `_orphans`
+holds a reference until `finished` fires, because destroying a running
+`QThread` crashes.
+
+Abandoning is only safe once the worker can no longer be heard from, so
+`stop()` calls `_detach_signals()` on the timeout path. `_running` being
+`False` silences `new_line` and `partial_line`, which are emitted inside the
+run loop — but **not** `connected` (emitted the moment the port opens, before
+the loop) or `error_occurred` (emitted from the `except` handlers). The
+typical reason a worker misses its deadline is a wedged `open()`, which
+eventually raises, so the one case this path exists for is also the case that
+fires a late signal. `MainWindow` slots resolve `self._worker` when the signal
+*arrives*, not when it was connected, so a late `error_occurred` from an
+abandoned worker used to run `_on_serial_error` against whatever session was
+live by then — tearing down a healthy connection and, with auto-reconnect off,
+showing a modal error naming a port the user had left. `finished` stays
+connected; the orphan bookkeeping needs it. A signal with no receivers only
+*warns* rather than raising, so the warning is suppressed rather than caught
+(`QObject.receivers()` takes a signature string in PySide6, not a signal).
 
 Constructor takes an optional `options` dict: `databits` (5–8), `parity`
 (`'N'/'E'/'O'/'M'/'S'`), `stopbits` (`'1'/'1.5'/'2'`), `flow`
@@ -60,35 +125,156 @@ loop drains the queue and writes before each read so all port access stays on
 the worker thread. Worst-case TX latency is one read timeout (0.1 s).
 
 ### `app/filter_engine.py` — stateless functions
-`match(line, rules, mode) -> bool`. Rule dict keys: `type`, `value`, `mode`.
+`match(line, rules, mode) -> bool`. Rule dict keys: `type`, `value`, `mode`,
+and optional `ignore_case` (default `False`; honoured by `substring` and
+`regex` only — level keys are already normalised and module names are
+case-sensitive identifiers).
 
 Rule types:
 - `substring` — plain `in` check
-- `regex` — `re.search`; silently returns False on bad pattern
-- `level` — matches `<dbg>/<inf>/<wrn>/<err>` tag in the line
+- `regex` — `re.search`; returns False on an unparseable pattern (the engine
+  stays total; `FilterBar` validates before a rule ever gets this far)
+- `level` — compares `log_format.detect_level(line)`, so an explicit
+  `<dbg>/<inf>/<wrn>/<err>` tag **or** a keyword-detected severity matches
 - `module` — prefix-matches the module field (after the level tag)
 
 `mode` (`'AND'`/`'OR'`) controls how include rules combine. Exclude rules
 always win regardless of mode. If there are no include rules, all lines pass
 (subject to excludes).
 
+Level rules go through the same `detect_level()` the colorizer and minimap
+use, so what is painted `<err>` is what a `level: err` rule selects. Matching
+only an explicit `<tag>` here meant syslog and unstructured lines were
+coloured by severity but invisible to level filters.
+
+### `app/ansi.py` — ANSI/VT100 escape sequence parsing
+Stdlib-only and pure (no Qt, no settings, no state), like `log_format.py`.
+Exports `parse(line) -> (text, spans)`, `strip(line)`, `has_escapes(line)`,
+`Style` and `DEFAULT_STYLE`.
+
+Some firmware emits coloured log output (Zephyr's
+`CONFIG_LOG_BACKEND_SHOW_COLOR`) and any build with a shell emits VT100 cursor
+control. Beyond looking like noise, escapes **break the line-structure
+parsers**: `colorizer._ZEPHYR_RE` is anchored at `^`, so a leading colour code
+disables syntax colouring entirely, and `log_format.MODULE_RE` needs
+whitespace directly after the level tag, so `<wrn>\x1b[0m module:` yields no
+module and `module:` filter rules stop matching. (`detect_level` uses
+`search`, so it was never affected — which is why level filters kept working
+while module filters silently didn't.) Escapes therefore come out of the text
+before anything downstream sees it.
+
+- `_ESCAPE_RE` covers CSI, OSC (BEL- or ST-terminated), DCS/SOS/PM/APC, nF
+  (`ESC ( B`), single-character Fe escapes, and a trailing lone `ESC` — a
+  sequence split across two serial reads leaves one at end of line.
+- `_CONTROL_RE` removes stray C0 bytes (backspace, BEL, …) that would draw as
+  boxes. **Tab is kept** — it is content in a log line.
+- SGR handling: reset, bold, italic, underline and their off-codes, 30–37,
+  90–97, 39, `38;5;n` (xterm-256) and `38;2;r;g;b` (truecolour). Background
+  codes (40–47, 100–107, `48;…`, 49) are *parsed* so their parameters are not
+  misread as a foreground request, then discarded — per-line background blocks
+  hurt readability and the firmware's choice rarely suits a theme it never saw.
+- Palette is Dracula's 16 ANSI colours. Both app themes are dark, so one set
+  serves; the goal is honouring the requested index, not emulating a specific
+  terminal.
+- `parse()` is a **one-line terminal**, not an escape filter: `_render()`
+  replays writes, cursor moves and erases into a `cells` list of
+  `(char, Style)` indexed by column, and returns what a terminal would end up
+  showing. Deleting the sequences instead is not enough — the Zephyr shell
+  wipes its prompt before printing each log message
+  (`uart:~$ ESC[2K CR [00:00:00.200] <inf> …`), so dropping the erase and the
+  carriage return without acting on them cemented the prompt onto the front of
+  every log line during boot. Implemented: `\r` (column 0), `\b`,
+  `ESC[K`/`[1K`/`[2K`, `ESC[2J`, `ESC[nC`/`[nD`, `ESC[nG`, `ESC[H`. Anything
+  else is consumed and ignored, which is what a terminal does with a
+  capability it lacks. Writing past the end pads with spaces; a short
+  overwrite leaves the tail, as on a real terminal.
+- `strip(line)` is defined as `parse(line)[0]`, so the text used for
+  filtering, searching and the minimap can never disagree with the text on
+  screen.
+- `parse()` returns spans as `(start, length, Style)` over the *rendered*
+  text, covering only non-default runs — so "no spans" means "colour this the
+  usual way". Style belongs to the cell, so an overwrite carries whatever SGR
+  is in effect at the time of the write, not at the time of the original.
+- Cost is ~520 ns/line for a line with nothing to render (fast path:
+  `_NEEDS_RENDER`, i.e. no ESC, CR or BS) and ~16 µs for one that goes through
+  the cell buffer, against ~10–50 µs for the `QTextCursor.insertText` that
+  follows. At 115200 baud that is well under 1% of a core. One code path
+  rather than a second SGR-only shortcut, so rendered text and filtered text
+  cannot drift apart.
+
+### `app/log_format.py` — pure format parsing
+Stdlib-only home for log-line format knowledge shared by `colorizer.py` and
+`filter_engine.py`: `LEVELS`, `LEVEL_TAG_RE`, `MODULE_RE`, `keyword_level()`,
+`detect_level()` and `module_of()`. Kept free of Qt and `AppSettings` so
+`filter_engine` stays dependency-light and stateless.
+
+`detect_level(line)` is the single definition of a line's severity — explicit
+`<tag>` first, then a case-insensitive, word-boundary-anchored keyword scan
+(`error/err/fatal/critical` → `err`, `warning/warn` → `wrn`, `info/notice` →
+`inf`, `debug/dbg/trace` → `dbg`, checked in that priority order).
+
 ### `app/ui/log_pane.py` — `LogPane`, `make_pane`, shared constants
 Shared `QTextEdit` subclass used by both `MainWindow` and `FileViewer`. Extracted
 here to avoid circular imports. Key contents:
 
 - `LogPane(QTextEdit)`:
-  - `createMimeData` always produces plain text (never HTML).
+  - `createMimeDataFromSelection()` puts **only** `text/plain` on the
+    clipboard. This is the actual QTextEdit virtual; an earlier
+    `createMimeData(selection)` override matched no Qt hook and never ran, so
+    copies really did carry `text/html` (with colour spans), `text/markdown`
+    and ODF. `QTextCursor.selectedText()` separates blocks with U+2029, which
+    is translated back to `\n` — otherwise a multi-line copy pastes as one
+    unreadable line.
   - `append_line(segments, scroll=True)` inserts a line and enforces the
     configurable cap by trimming the oldest block when `document().blockCount()`
     exceeds `self._cap`. Smart scroll: only scrolls to bottom if the pane was
     already at the bottom before the insert.
+  - `replace_last_line(segments)` rewrites the last block in place and
+    `drop_last_line()` removes it, separator included — used for the
+    provisional tail from `SerialWorker.partial_line`, which would otherwise
+    stack up partial copies of the same line. Both go through
+    `_select_last_block()`, which selects End→StartOfBlock so the block
+    separator is left alone; `drop_last_line` then deletes it explicitly, and
+    only when there is a preceding block to keep.
   - `set_cap(n)` updates `self._cap` and immediately trims from the top.
     Default `_DEFAULT_CAP = 100_000`.
+  - `_trim_to_cap(doc)` removes all excess blocks in **one** extended
+    selection. Removing them one per loop iteration made lowering the cap
+    O(excess) edits — 0.71 s to go from 200,000 lines to 1,000, now 0.21 s.
+  - `replace_lines(segmented_lines)` rebuilds the pane by filling a fresh
+    `QTextDocument` with a single cursor and swapping it in, instead of
+    clearing and calling `append_line()` per line. Skips the per-line
+    scrollbar and cap bookkeeping, and accepts a generator reading the pane's
+    current document, so a rebuild never materialises every line as a Python
+    list. Rebuilding 50,000 lines went from 5.7 s to 1.5 s.
   - `mouseDoubleClickEvent` emits `line_double_clicked(str)` with the block
     text at the click position.
   - `dragEnterEvent` / `dropEvent` accept local file URL drops and emit
     `file_dropped(Path)`. Text drops fall through to the default QTextEdit
     handler.
+- `ANSI_PROPERTY` / `ANSI_COLOR_PROPERTY` / `ANSI_FLAGS_PROPERTY`,
+  `ansi_fmt(style, active=True)`, `ansi_segments(text, spans, active=True)`,
+  `block_ansi_styles(block)` — support for painting lines from escape
+  sequences. `ansi_fmt` sets foreground plus the three font flags and **never**
+  family or point size, so the sidebar's font-size control still applies to
+  these lines.
+
+  The three properties (offsets from `QTextFormat.Property.UserProperty`) tag
+  the run and record the wire style. The tag is what lets a rebuild tell a
+  wire-coloured run from a colorizer-coloured one: rebuilds re-colorize from
+  block text, which no longer holds the escapes, so without it the wire
+  colours would be lost the first time a theme or filter change fired.
+  `QTextCharFormat` is a value type stored per character run, so all three
+  survive being copied into the rebuilt document — no `QTextBlockUserData`
+  ownership questions.
+
+  The style is **recorded as well as painted** so that `active=False` (the
+  pane isn't colorized right now) displays plain without destroying it;
+  reading the colour back off the foreground instead would make turning
+  colorization off a one-way trip for these lines. `block_ansi_styles` walks a
+  block's fragments and returns `(text, Style)` runs if **any** carries the
+  tag, else `None` — styles rather than formats, so the caller re-applies
+  current settings through the same path a fresh line takes.
 - `make_pane(font, cap=None) -> LogPane` — factory used by both windows.
 - `doc_line_count(pane) -> int` — displayed line count (0 for an empty
   document; Qt reports blockCount()==1 when empty).
@@ -147,25 +333,42 @@ Optional and off by default; see `AppSettings.minimap_enabled` /
   ever arrives.
 
 ### `app/ui/filter_bar.py` — `FilterBar(QWidget)`
-Compact two-part filter UI. Constructor: `FilterBar(settings=None, parent=None)`.
-When `settings` is `None` (file viewer), all state is in-memory only — nothing
-is persisted to `AppSettings`. Lives inside the filtered pane's container
+Compact two-part filter UI. Constructor: `FilterBar(parent=None)`. All state
+is in-memory: rules are per-session view state in both windows and nothing is
+written to `AppSettings`. (The class used to take an optional `settings` and
+persist through it, but no caller ever passed one, so the whole branch and the
+matching `AppSettings.filter_*` accessors were unreachable.) Lives inside the
+filtered pane's container
 (inserted into `pane_with_header`'s layout, between the header label and the
 pane — see below) in both `MainWindow` and `FileViewer`, so the controls sit
 directly above the content they affect.
 
-- **Input row** (`_input_row`): text input, type selector
-  (substring/regex/level/module), include/exclude selector, AND/OR mode
-  toggle, Add button. Hidden by default; toggled by a toolbar action. Escape
-  dismisses it and emits `input_bar_closed`.
+- **Input row** (`_input_row`): value editor, type selector
+  (substring/regex/level/module), include/exclude selector, an `Aa` match-case
+  toggle (checked by default, so rules stay case-sensitive unless asked
+  otherwise; disabled for level and module, where it does nothing), AND/OR
+  mode toggle, Add button.
+  The value editor swaps with the type: `level` shows `_level_combo` (a fixed
+  err/wrn/inf/dbg dropdown) and the other types show `_input` with a
+  type-specific placeholder. Level rules take one of four internal keys, so
+  free text was unusable — "warning", "<wrn>", "warn" and "WRN" all silently
+  matched nothing and only "wrn" worked. The dropdown labels also name the
+  keywords each level catches (`wrn — <wrn>, warning, warn`), which is the
+  only place the keyword fallback is visible in the UI. Hidden by default; toggled by a
+  toolbar action. Escape dismisses it and emits `input_bar_closed`.
+  Regex values are `re.compile`d before the rule is accepted; a bad pattern
+  reddens the input, puts the `re.error` in its tooltip and adds nothing.
+  Without that check an invalid include silently emptied the filtered pane and
+  an invalid exclude silently excluded nothing — both read as a broken filter
+  rather than a broken pattern.
 - **Chip strip** (`_chip_scroll`): horizontal scrollable row of `_RuleChip`
   widgets, one per active rule. Each chip shows `+ sub: value` or `− lvl: err`
   with a `×` remove button. Hidden completely when no rules are active.
 - `filters_changed(rules: list, mode: str)` — emitted on any rule/mode change.
 - `input_bar_closed` — emitted when Escape dismisses the input row; used by
   the toolbar action to uncheck itself.
-- `add_rule(value, rule_type, mode)` — programmatic rule injection (used by
-  the file viewer find bar's "Filter to matches" button).
+- `add_rule(value, rule_type, mode, ignore_case=False)` — programmatic rule
+  injection (used by the find bar's "Filter to matches" button).
 - `toggle_input_bar()` / `is_input_bar_open() -> bool` — called by the
   toolbar action. `is_input_bar_open()` is backed by an explicit `_input_open`
   flag rather than `_input_row.isVisible()`: since the bar now lives inside
@@ -203,6 +406,23 @@ connect. Module also exports `config_summary(settings) -> str` (`"8-N-1"`)
 and `config_tooltip(settings) -> str` used by `SerialPanel`'s button.
 
 ### `app/ui/send_bar.py` — `SendBar(QWidget)`
+Control keys pass straight through to the port: `Ctrl+A`–`Ctrl+Z` send
+`0x01`–`0x1A`, `Escape` sends `0x1B`, plus `Ctrl+[`/`\`/`]`/`Space`. They go
+out **immediately and without the line ending** — an interrupt is the byte on
+its own, and must not wait for Enter. Emitted as
+`control_requested(bytes, mnemonic)`; `MainWindow._on_control` sends the byte
+and records it as `>> ^C` in caret notation, since a raw `0x03` would be
+invisible in the pane and in the saved log.
+
+`_CTRL_MOD` picks the modifier that means *physical Control*: Qt maps
+`ControlModifier` to Command on macOS and `MetaModifier` to the real Control
+key, so the platforms need opposite values. A happy consequence on macOS is
+that control characters never collide with the app's Cmd-based shortcuts.
+Elsewhere they can, so `_HistoryLineEdit.event()` claims the
+`ShortcutOverride` — window-level `QAction` shortcuts are resolved before a
+key reaches `keyPressEvent`, so `Ctrl+F` would otherwise open the find bar
+instead of sending `^F`.
+
 Input row for transmitting characters out the serial port, docked below the
 display panes in `MainWindow`. `Send:` label, `_HistoryLineEdit` (Enter sends;
 Up/Down recall previously sent lines, shell-style, in-memory only, capped at
@@ -218,21 +438,27 @@ Wraps `QSettings` (org: `logulator`, app: `logulator`) with typed
 getters/setters and hardcoded defaults. Covers: window geometry, splitter
 state, sidebar open/closed, colorization settings (enabled, mode, apply-to,
 per-level colors, per-syntax-field colors), buffer cap, minimap
-enabled/apply-to, filter state, recent files, auto-reconnect, and app theme.
-All future persistent settings go through this class.
+enabled/apply-to, log directory, recent files, auto-reconnect, and app theme.
+Filter rules are deliberately **not** persisted — they are per-session view
+state. All future persistent settings go through this class.
 
 Buffer cap: `buffer_cap() -> int` / `set_buffer_cap(val: int)`. Default
 100,000, clamped to [1,000, 500,000] on read and write.
+
+Logging: `log_dir() -> str` / `set_log_dir(val: str)` — stored under
+`logging/dir`. Defaults to `~/logs`; an empty or whitespace value restores
+that default. Absolute by construction, so it no longer depends on the process
+working directory — the old relative `"logs"` meant a terminal launch and a
+desktop-launcher launch wrote to different places.
+
+Escape sequences: `ansi_mode() -> str` / `set_ansi_mode(val: str)` —
+`'strip'`/`'render'`/`'off'`, stored under `display/ansi_mode`, default
+`'strip'`. Display only — the session log always records the bytes verbatim.
 
 Minimap: `minimap_enabled() -> bool` / `set_minimap_enabled(val: bool)` —
 stored under `display/minimap_enabled`, default `False`. `minimap_apply_to()
 -> str` / `set_minimap_apply_to(val: str)` — `'all'`/`'raw'`/`'filtered'`,
 stored under `display/minimap_apply_to`, default `'raw'`.
-
-Filter persistence (main window only — file viewers don't persist):
-- `filter_rules() -> list` / `set_filter_rules(rules: list)` — stored as JSON.
-- `filter_mode() -> str` / `set_filter_mode(mode: str)` — `'AND'` or `'OR'`.
-- `filter_bar_open() -> bool` / `set_filter_bar_open(val: bool)`.
 
 Recent files:
 - `recent_files() -> list` — ordered list of path strings, most recent first.
@@ -253,7 +479,15 @@ connect): `serial_databits()` (5–8, default 8), `serial_parity()`
 
 TX (send): `tx_line_ending()` (`'none'/'lf'/'cr'/'crlf'`, default `'crlf'`,
 stored under `tx/line_ending`); `tx_color()` / `set_tx_color()` (default
-`#8be9fd`, stored under `color/tx`).
+`#8be9fd`, stored under `color/tx`); `tx_echo_empty()` /
+`set_tx_echo_empty()` (bool, default `False`, stored under `tx/echo_empty`).
+
+`tx_echo_empty` controls only whether a bare Enter is echoed and logged — the
+line ending is transmitted either way, so the prompt-nudge still works. Off by
+default because an empty `>> ` marker carries no information, and the send
+field takes focus on connect, so reflexive Enters would litter the pane and
+the session log. `MainWindow._on_send` reads it per send, so no pane rebuild
+or broadcast is needed on change.
 
 Last-used connection: `last_port()` / `set_last_port()` (str, default `""`),
 `last_baud()` / `set_last_baud()` (int, default 115200) — stored under
@@ -270,12 +504,11 @@ Theme:
 Reads settings from `AppSettings` and converts a log line string into a list
 of `(text, QTextCharFormat)` segments for insertion into `QTextEdit`.
 
-Module-level `detect_level(line) -> Optional[str]` — the level-detection half
-of level-mode colorization (explicit `<tag>` search, falling back to a
-keyword scan), factored out so it can be reused independent of the active
-colorization mode. `Colorizer._level()` calls it; so does each window's
-`_minimap_color_for()` helper, so the minimap shows severity bands even when
-colorization is set to `syntax` mode or disabled outright.
+Level detection lives in `app/log_format.py` (`detect_level`, `keyword_level`),
+imported here rather than duplicated. `Colorizer._level()` uses it, so does
+each window's `_minimap_color_for()` helper — so the minimap shows severity
+bands even when colorization is in `syntax` mode or off — and so do `level`
+filter rules, which is what keeps colouring and filtering in agreement.
 
 Two modes:
 - `level` — whole line colored by severity. Checks for a Zephyr `<level>` tag
@@ -321,6 +554,15 @@ Fixed-width (280 px) collapsible panel shown on the right side of
   Also a font size dropdown (8–24 pt, persisted via `AppSettings.font_size`,
   default 12) emitting `font_size_changed(int)` — both `MainWindow` and
   `FileViewer` (via its settings dialog) connect it to resize pane fonts live.
+Changes are broadcast: `LogWindowMixin._on_settings_changed()` and
+`_on_font_size_changed()` iterate `open_log_windows()` so every open window
+(serial or viewer) refreshes, not just the one whose sidebar emitted. Buffer
+cap goes through `MainWindow._instances` instead, since file viewers keep
+`_FILE_PANE_CAP`. Theme needs no broadcast — the palette is application-wide.
+
+- **Display / Escape sequences:** "ANSI codes" combo (Strip / Render colors /
+  Show raw), placed above the colorization controls because it decides what
+  the colorizer sees. Emits `settings_changed()`.
 - **Display / Colorization:** enable checkbox, mode selector (Level/Syntax),
   apply-to selector (All panes / Raw log only / Filtered log only / None),
   and color-picker rows for all eight configurable colors (four levels, three
@@ -332,6 +574,10 @@ Fixed-width (280 px) collapsible panel shown on the right side of
   `settings_changed()`, same as the colorization controls; `MainWindow` and
   `FileViewer` both call `_apply_minimap_settings()` from their
   `_on_settings_changed()` handler to show/hide and backfill the minimap(s).
+- **Logging:** current session-log directory plus a `…` button opening a
+  directory picker. Writes straight to `AppSettings.log_dir()` and emits no
+  signal — `MainWindow._on_connect` re-reads the setting each time, so the
+  change lands on the next connect without disturbing the running session.
 - **Buffer:** `QSpinBox` for the display line cap (range 1,000–500,000, step
   1,000, default 100,000). Emits `buffer_cap_changed(int)` — a separate
   signal so changes don't trigger a full pane rebuild.
@@ -341,20 +587,35 @@ Reads/writes directly through `AppSettings`.
 ### `app/ui/file_loader.py` — `FileLoaderWorker(QThread)`
 Background worker that streams a static log file in chunks of 2,000 lines.
 Emits `chunk_ready(list[str])` per chunk and `load_complete(int total_lines)`
-when done. Emits `error_occurred(str)` on `OSError`. Caller calls `cancel()`
-to abort early (e.g. on window close). Decodes with UTF-8, replacing errors.
+when done. Emits `error_occurred(str)` on `OSError`. `cancel()` sets the flag;
+`stop(timeout_ms=2000)` cancels and waits, keeping a reference in module-level
+`_orphans` if the thread misses the deadline — destroying a running QThread
+crashes, and the previous bare `wait(500)` let Python drop the last reference
+while the loader was still going. Decodes with UTF-8, replacing errors.
 Strips `\r\n` / `\r` line endings.
 
 ### `app/ui/find_controller.py` — `FindController(QObject)`
 Reusable controller binding a `FindBar` to a `LogPane`. Owns all search
-state: match cursors, current index, 300 ms debounce timer, highlight
+state: match positions, current index, 300 ms debounce timer, highlight
 application (amber ExtraSelections capped at 5,000, blue current-match
 selection, wrap-around navigation, scroll centering). Used by `FileViewer`
 (static file search) and `MainWindow` (live raw-buffer search). Public API:
 `research()` — re-run the current search after the document changed (called
-by `FileViewer._on_load_complete`). In the main window, matches are computed
-on demand and can go stale as lines append/trim — press Enter or retype to
-refresh; acceptable for live use.
+by `FileViewer._on_load_complete`).
+
+Matches are stored as `(start, length)` **integer tuples**, not `QTextCursor`
+objects. Qt repositions every live cursor on every document edit, so holding
+one per match made appends scale with the match count — measured at 7.5×
+slower with 60,000 matches, enough to stall the main window under a busy
+serial feed. Cursors are built on demand in `_cursor_for()`, only for the
+matches actually being highlighted, and return `None` when a stale position no
+longer fits the document.
+
+Because integer positions do not self-adjust, `_refresh_if_stale()` compares
+`QTextDocument.revision()` before each navigation and re-runs the search when
+the document changed, preserving the current index where it can. This is
+stricter than the old behaviour, where stale matches simply pointed at the
+wrong text until the user retyped.
 
 ### `app/ui/find_bar.py` — `FindBar(QWidget)`
 Inline find bar UI (widget only — logic lives in `FindController`). Used by
@@ -368,7 +629,10 @@ Signals:
 - `text_changed(str)` — live as user types (drives debounced search).
 - `go_next` / `go_prev` — Enter / Shift+Enter in the input, or button clicks.
 - `filter_to_matches(str)` — emits current search text; connected to
-  `FilterBar.add_rule()` to add it as a substring include rule.
+  `FilterBar.add_rule()` to add it as a substring include rule, with
+  `ignore_case=True`. `QTextDocument.find` is case-insensitive by default, so
+  a case-sensitive rule would select fewer lines than the match counter had
+  just reported.
 - `closed` — emitted when Escape or the close button hides the bar.
 
 `set_match_status(current, total, has_query)` updates the counter label and
@@ -379,6 +643,59 @@ Simple modal dialog opened from Help → About Logulator. Shows: `icon.png`
 (if present, scaled to 64×64), app name, version from `app.version.__version__`,
 description, MIT license, clickable GitHub link (`https://github.com/klanders9/logulator`),
 and "† Soli Deo Gloria". Fixed width, OK button to dismiss.
+
+### `app/ui/log_window.py` — `LogWindowMixin`
+Everything `MainWindow` and `FileViewer` do identically: pane/minimap/filter-bar
+construction, the colorization pipeline, pane rebuilds, filtered-pane
+visibility, selection exclusion, the minimap surface, and the settings/theme/
+font broadcasts over the module-level `_open_windows` registry
+(`open_log_windows()`). Subclasses call `_init_log_window()` then
+`_build_log_panes()`, and supply `_on_filters_changed` and `open_file`.
+
+Incoming-line path — the one place display text is produced, so the two
+windows cannot drift:
+
+- `_append_display_line(line, scroll=True)` — appends to the raw pane, to the
+  filtered pane if the line matches, and to whichever minimaps are showing.
+  Used by `MainWindow._on_new_line`/`_record_tx` and by `FileViewer`'s chunk
+  loader and follow-mode tail.
+- `_split_ansi(line) -> (text, spans)` — applies `AppSettings.ansi_mode()`.
+  Called **once** per line, and everything downstream (panes, `filter_engine`,
+  minimap, find bar) works off the returned text, so escapes are removed
+  exactly once and nothing else has to know they existed.
+- `_pane_shows_color(pane) -> bool` — `color_apply_to()` routing alone.
+  `_colorization_active(pane)` is that **and** `color_enabled()`.
+
+  The colorizer uses `_colorization_active`; wire colours use
+  `_pane_shows_color`. The split is deliberate: "Enable colorization" governs
+  logulator's own level/syntax colouring, so turning it off while choosing
+  "Render colors" is the natural way to say "use the target's colours, not
+  yours" — gating both on one flag made that combination render plain.
+  "Apply to" is different: it routes colour to a pane, so it applies to
+  either source.
+- `_segments_for(text, spans, pane)` — wire colours win for the lines that
+  carry them, otherwise `_get_segments()`. Per-line rather than a global mode
+  flip: mixed output is normal (a bootloader prints plain, the app colours),
+  and a single stray escape early in a boot log must not silently disable
+  colourization for the whole session.
+- `_segments_for_block(block, pane)` — the rebuild counterpart. Recovers wire
+  *styles* (via `block_ansi_styles`) and re-applies them through the current
+  gate, but **only while `ansi_mode` is still `'render'`**, so switching away
+  releases those lines to the colorizer. Otherwise it re-splits the block
+  text, which is what makes turning stripping *on* clean up lines already on
+  screen. Changing apply-to is reversible for these lines because the style is
+  stored, not inferred from what is painted; changing `ansi_mode` away from
+  `'render'` is not, since the escapes are no longer in the document. All of
+  it reaches here through `settings_changed` → `_apply_display_settings()`.
+- `_on_partial_line(text)` / `_drop_pending_partial()` and the
+  `_pending_partial` flag — display for `SerialWorker.partial_line`. The tail
+  is appended to the **raw pane only** and replaced in place as it grows; it
+  is not counted, filtered or given a minimap band, because committing a
+  provisional line to the filtered pane would mean retracting it there if the
+  completed line no longer matched. `_append_display_line` drops it first, so
+  a TX echo or a reconnect separator supersedes it as correctly as the
+  completed line does — dropping only in `_on_new_line` would leave an echo as
+  the last block and delete *that* on the next line.
 
 ### `app/ui/file_viewer.py` — `FileViewer(QMainWindow)`
 Standalone log file viewer. Multiple instances may coexist; none are parented
@@ -392,6 +709,15 @@ class-level `_instances` list — every instance adds itself on init and removes
 itself on close, so viewers survive even if no `MainWindow` holds a reference.
 
 **Loading:** `FileLoaderWorker` streams the file in 2,000-line chunks.
+`_start_load()` begins with `_detach_worker()`, which disconnects the previous
+loader's three signals. `cancel()` only sets a flag the worker checks between
+lines, so emits already queued for the GUI thread still deliver, and the slots
+carry no sender identity — a second truncation arriving while the first reload
+was still streaming would splice the old worker's chunks into the new document
+and let its `load_complete` overwrite `_follow_pos` with an offset from the
+wrong pass, silently skipping content in follow mode. Detaching in
+`_start_load()` rather than in `_restart_follow_after_truncation()` covers
+every reload path, including any added later.
 `_on_chunk_ready` appends to `_raw_pane` (and to `_filtered_pane` if rules
 are active). `_on_load_complete` records `_follow_pos = path.stat().st_size`,
 scrolls both panes to the bottom, then triggers a full filtered-pane rebuild
@@ -421,7 +747,14 @@ read) into `_tail_buffer` to handle partial lines, then complete lines are
 appended to both panes. If the user scrolls up, `_follow_paused` is set and
 a "⬇ Resume" toolbar action appears; scrolling back to the bottom or clicking
 Resume clears the pause. `_programmatic_scroll` flag prevents spurious pause
-detection when the code scrolls to bottom. `QFileSystemWatcher` is cleaned up
+detection when the code scrolls to bottom.
+
+If the file **shrinks** (truncated or rotated), `_on_file_changed` calls
+`_restart_follow_after_truncation()`, which cancels the loader, clears both
+panes and minimaps and reloads from scratch. `_follow_pos` only ever grew
+before, so a seek past the new end returned nothing and follow was silently
+dead for the life of the window. Reloading rather than appending from offset 0
+keeps the pane matching the file, since the old content is gone. `QFileSystemWatcher` is cleaned up
 in `closeEvent` and the path is re-added if the watcher drops it (some
 platforms remove the watch after the first change event).
 
@@ -442,6 +775,10 @@ through `MainWindow`.
 `apply_palette(QApplication.instance(), theme)`.
 
 **Signals:** `about_to_close` (for `MainWindow` cleanup).
+
+**Geometry:** saved to and restored from `AppSettings.save_viewer_geometry` /
+`save_viewer_splitter` (keys `viewer/*`), kept separate from the serial
+window's `window/*` since the two layouts are commonly sized differently.
 
 **Colorization:** `_get_segments(line, pane)` follows the same logic as
 `MainWindow`, delegating to a `Colorizer` instance that reads live settings.
@@ -519,8 +856,9 @@ connected to `MainWindow.open_file()`.
   Hidden when no rules are active; shown automatically when the first rule
   is added. Initial split is 60/40 (raw/filtered) on first show (or
   restored from saved state); user can drag after that.
-- When filters change, `_rebuild_filtered_pane()` clears the filtered pane
-  and re-walks `_raw_pane.document()` blocks to rebuild from scratch.
+- When filters change, `_rebuild_filtered_pane()` re-walks
+  `_raw_pane.document()` blocks and feeds the matching ones to
+  `LogPane.replace_lines()` as a generator.
 - When colorization settings change, `_on_settings_changed()` calls
   `_rebuild_raw_pane()` and (if visible) `_rebuild_filtered_pane()` to
   recolor all displayed lines. Both rebuilds use `setUpdatesEnabled(False)`
@@ -596,6 +934,10 @@ the active rules). Echoes are not counted in `_line_count` (RX lines only).
 captured at connect time into `_reconnect_options` so auto-reconnect reuses
 the same configuration.
 
+`_record_tx(text)` is the shared log-and-echo path for both `_on_send` and
+`_on_control`. An empty send skips it unless `AppSettings.tx_echo_empty()` is
+set; a control byte never does, since its mnemonic is never blank.
+
 **Lifecycle:** `_on_connect` opens a new log session, resets line count and
 connect time, starts the worker and the status timer, enables the send bar. `_on_disconnect(prompt_clear)`
 stops the timer, stops the worker, closes the log. When `prompt_clear=True`
@@ -608,7 +950,26 @@ Applies the Fusion Qt style and a named `QPalette` to the `QApplication`.
 Two themes are available; both are applied on all platforms.
 
 `apply_palette(app, theme)` — dispatch entry point. `theme` is `'dracula'`
-or `'vscode'`; falls back to Dracula for unknown values.
+or `'vscode'`; falls back to Dracula for unknown values. It also records the
+active theme so `active_colors()` works without an `AppSettings` instance.
+
+**Semantic colors.** `QPalette` does not cover log-pane chrome, minimap bands,
+inline error fields or filter chips, so `_THEME_COLORS` defines those per
+theme and `colors(name)` / `active_colors()` expose them: `plain_text`,
+`muted_text`, `header_text`, `border`, `separator`, `neutral_band`,
+`error_field`, `match_highlight`, `chip_include`, `chip_exclude`. Every theme
+must define every key. Widgets look these up instead of hardcoding hex, which
+is what made the old values (all tuned for Dracula) stay put under VS Code
+Dark.
+
+Because those values are baked into stylesheets and `QTextCharFormat`s at
+build time, a live switch has to re-apply them: `LogWindowMixin._on_theme_changed`
+calls `apply_palette` then `_apply_theme()` on every open window, which
+restyles the panes, headers, minimaps, filter bar and find bar and rebuilds
+the panes so existing lines pick up the new `plain_text`. Widgets that carry
+theme-derived styling expose a `restyle()` for this. Transient states (the
+find bar's no-match field, the filter bar's invalid-regex field) are
+re-applied too, so they don't keep the previous theme's red.
 
 **Dracula** (`'dracula'`): window/panel bg `#282a36`, input bg `#21222c`,
 buttons/surfaces `#44475a`, primary text `#f8f8f2`, disabled text `#6272a4`,
@@ -650,6 +1011,24 @@ recognized by syntax-mode colorization:
   2024-06-14T10:23:45.123456+00:00 hostname kernel: message here
 
 **Generic / unstructured** (level mode uses keyword scan; syntax mode renders plain grey).
+
+## Testing
+
+`pytest` + `pytest-qt`, declared as the `dev` optional-dependency group in
+`pyproject.toml`. Install with `.venv/bin/pip install -e ".[dev]"`, run with
+`.venv/bin/python -m pytest`.
+
+- `tests/conftest.py` sets `QT_QPA_PLATFORM=offscreen` **before** PySide6 is
+  imported, and redirects `QSettings` to a temporary INI tree for the whole
+  session. Without that redirect, tests would read and overwrite the
+  developer's real logulator preferences. The `settings` fixture hands out a
+  cleared `AppSettings` backed by that store.
+- Qt widget tests take pytest-qt's `qapp` / `qtbot` fixtures.
+- `pythonpath = ["."]` in `[tool.pytest.ini_options]` makes `app` importable
+  without installing the package.
+- Known bugs that are captured but not yet fixed are marked
+  `@pytest.mark.xfail(strict=True)` with the reason. Strict mode means the
+  suite fails once the bug is fixed, which is the prompt to delete the marker.
 
 ## Current Status
 Implementation complete and tested on macOS. All core features working:
@@ -737,17 +1116,19 @@ Implementation complete and tested on macOS. All core features working:
   reconnecting… ---" / "--- reconnected ---") are appended to both display
   panes to mark the event; checkbox state persisted via `AppSettings`; clicking
   Disconnect or unchecking the box while reconnecting cancels and ends the session
+- ANSI/VT100 escape handling: stripped from the display by default, so colored
+  firmware output stops rendering as literal escape characters *and* the
+  anchored Zephyr syntax regex and module-prefix filters work on those lines
+  again; "Render colors" honors the target's SGR colors per line (falling back
+  to logulator's colorization on lines that carry none); "Show raw" keeps the
+  old behavior. Setting lives in **⚙ Settings → Display → Escape sequences**.
+  The session log is unaffected in every mode
 - Minimap (colorband-minimap branch, off by default): optional colored-band
   overview strip beside the raw and/or filtered pane, showing per-line
   severity color down-sampled to the widget's pixel height; click/drag to
   jump the pane's scroll position; "Show minimap" checkbox + Both/Raw/Filtered
   apply-to selector in the settings sidebar, persisted via `AppSettings`;
   available in both `MainWindow` and `FileViewer`
-
-**Under investigation:**
-- Possible bug where disconnecting and reconnecting reuses the same log
-  file rather than opening a new one. Not yet reproduced reliably — tabled
-  until confirmed.
 
 ## Known Constraints
 - Serial port device paths: /dev/tty.usbmodem* or /dev/tty.usbserial* on
@@ -768,9 +1149,27 @@ Implementation complete and tested on macOS. All core features working:
   `FileLoaderWorker` strips `\r\n` / `\r` via `rstrip("\r\n")`.
 - `LogPane` is defined in `app/ui/log_pane.py` (not `main_window.py`) to
   avoid circular imports between `MainWindow` and `FileViewer`.
-- `filter_engine.py` is stateless and must remain untouched.
-- The .venv is Python 3.9 despite the 3.11+ requirement. Avoid new-style
-  union type hints (`X | Y`) until the venv is upgraded.
+- Escape *stripping* is one-way within a session; the colorization settings
+  are not. The panes hold the cleaned text, so switching `ansi_mode` to
+  `'off'` or `'render'` affects new lines only — the escapes behind lines already on screen are gone from the
+  document. They are still in the session log, so reopening it in the file
+  viewer under the new mode shows them. Turning stripping *on* does apply
+  retroactively.
+- VT100 handling is **line-local**. Cursor motion, erase and overwrite are
+  emulated within a single line; anything spanning lines (scroll regions,
+  cursor-up, a real alternate screen) is not, since the pane is an append-only
+  transcript rather than a screen. In practice a log stream only needs
+  column-level control, which is what the shell's prompt redraw uses.
+- `app/ansi.py` is stdlib-only and pure by the same rule as
+  `app/log_format.py`. It may import neither Qt nor `AppSettings`; the mode
+  decision belongs to `LogWindowMixin._split_ansi`.
+- `filter_engine.py` must remain **stateless**: pure functions only, no
+  instance state, no Qt, no `AppSettings`, no UI coupling. It may be edited,
+  but not turned into something that holds state or reaches into the app.
+  Its only dependency is `app/log_format.py`, which is stdlib-only by the
+  same rule.
+- The project targets Python 3.9 (`requires-python = ">=3.9"`, and the .venv is
+  3.9). Avoid new-style union type hints (`X | Y`) until that floor is raised.
 - File viewer Follow mode reads new content in binary mode and tracks a byte
   offset (`_follow_pos`). `QFileSystemWatcher` may drop the watch path after
   the first change event on some platforms — `_on_file_changed` re-adds it.

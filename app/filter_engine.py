@@ -3,30 +3,38 @@
   type: 'substring' | 'regex' | 'level' | 'module'
   value: str
   mode: 'include' | 'exclude'
+  ignore_case: bool (optional, default False; substring and regex only)
 match(line, rules) returns True if the line should be displayed."""
 
 import re
 
-_LEVEL_RE = re.compile(r"<(dbg|inf|wrn|err)>")
-_MODULE_RE = re.compile(r"<(?:dbg|inf|wrn|err)>\s+(\S+?):")
+from app.log_format import detect_level, module_of
 
 
 def _matches_rule(line: str, rule: dict) -> bool:
     t = rule["type"]
     v = rule["value"]
+    # Optional and defaulting to False, so rules written without the key keep
+    # their case-sensitive behaviour. The find bar's "Filter to matches" sets
+    # it, because QTextDocument.find is case-insensitive and the resulting
+    # rule has to select the same lines the counter just reported.
+    ignore_case = bool(rule.get("ignore_case"))
     if t == "substring":
-        return v in line
+        return v.lower() in line.lower() if ignore_case else v in line
     if t == "regex":
         try:
-            return bool(re.search(v, line))
+            return bool(re.search(v, line, re.IGNORECASE if ignore_case else 0))
         except re.error:
             return False
     if t == "level":
-        m = _LEVEL_RE.search(line)
-        return m is not None and m.group(1) == v
+        # Shares detect_level() with the colorizer, so a line shown in the
+        # <err> colour is matched by a level:err rule. Matching only an
+        # explicit <tag> here meant syslog and unstructured lines were
+        # coloured by severity but invisible to level filters.
+        return detect_level(line) == v
     if t == "module":
-        m = _MODULE_RE.search(line)
-        return m is not None and m.group(1).startswith(v)
+        module = module_of(line)
+        return module is not None and module.startswith(v)
     return False
 
 

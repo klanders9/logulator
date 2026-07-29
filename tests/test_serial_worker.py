@@ -1,0 +1,454 @@
+# Copyright (c) 2026 Kevin Landers. SPDX-License-Identifier: MIT
+"""Tests for SerialWorker line splitting, error reporting and shutdown.
+
+The serial port itself is stubbed — these cover the worker's own logic, not
+pyserial.
+"""
+
+import threading
+import time
+
+import pytest
+import serial
+
+from app import serial_worker as serial_worker_module
+from app.serial_worker import SerialWorker
+
+
+class FakeSerial:
+    """Minimal stand-in for serial.Serial, usable as a context manager."""
+
+    def __init__(self, chunks=None, read_error=None):
+        self._chunks = list(chunks or [])
+        self._read_error = read_error
+        self.written = []
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self.closed = True
+        return False
+
+    @property
+    def in_waiting(self):
+        return len(self._chunks[0]) if self._chunks else 0
+
+    def read(self, _n):
+        if self._read_error is not None:
+            error, self._read_error = self._read_error, None
+            raise error
+        if self._chunks:
+            return self._chunks.pop(0)
+        time.sleep(0.01)
+        return b""
+
+    def write(self, data):
+        self.written.append(data)
+
+
+class RecordingLogWriter:
+    def __init__(self, error=None):
+        self.data = b""
+        self._error = error
+
+    def write(self, chunk):
+        if self._error is not None:
+            raise self._error
+        self.data += chunk
+
+
+def run_worker(monkeypatch, qapp, fake, log_writer=None, stop_after=1.0):
+    """Run a worker against `fake` and collect what it emits.
+
+    The worker emits from its own thread, so the connections are queued and
+    only deliver while the main thread pumps events.
+    """
+    log_writer = log_writer or RecordingLogWriter()
+    worker = SerialWorker("/dev/fake", 115200, log_writer)
+    monkeypatch.setattr(worker, "_make_serial", lambda: fake)
+
+    lines, errors = [], []
+    worker.new_line.connect(lines.append)
+    worker.error_occurred.connect(errors.append)
+
+    worker.start()
+    deadline = time.monotonic() + stop_after
+    while time.monotonic() < deadline and not errors and fake._chunks:
+        qapp.processEvents()
+        time.sleep(0.005)
+    worker.stop()
+    qapp.processEvents()
+    return worker, lines, errors, log_writer
+
+
+class TestLineSplitting:
+    def test_splits_on_newline(self, qapp, monkeypatch):
+        fake = FakeSerial([b"one\ntwo\nthree\n"])
+        _w, lines, _e, _lw = run_worker(monkeypatch, qapp, fake)
+        assert lines == ["one", "two", "three"]
+
+    def test_strips_carriage_returns(self, qapp, monkeypatch):
+        """Zephyr UART emits \\r\\n; the bare \\r would show as blank lines."""
+        fake = FakeSerial([b"one\r\ntwo\r\n"])
+        _w, lines, _e, _lw = run_worker(monkeypatch, qapp, fake)
+        assert lines == ["one", "two"]
+
+    def test_reassembles_lines_split_across_chunks(self, qapp, monkeypatch):
+        fake = FakeSerial([b"par", b"tial li", b"ne\n"])
+        _w, lines, _e, _lw = run_worker(monkeypatch, qapp, fake)
+        assert lines == ["partial line"]
+
+    def test_holds_back_an_incomplete_trailing_line(self, qapp, monkeypatch):
+        fake = FakeSerial([b"complete\nincomplete"])
+        _w, lines, _e, _lw = run_worker(monkeypatch, qapp, fake)
+        assert lines == ["complete"]
+
+    def test_undecodable_bytes_are_replaced_not_fatal(self, qapp, monkeypatch):
+        fake = FakeSerial([b"good\n\xff\xfe bad\n"])
+        _w, lines, _e, _lw = run_worker(monkeypatch, qapp, fake)
+        assert lines[0] == "good"
+        assert len(lines) == 2
+
+
+class TestLogging:
+    def test_every_byte_reaches_the_log_unmodified(self, qapp, monkeypatch):
+        """Core design principle: the log gets raw bytes, filters never apply."""
+        payload = b"one\r\ntwo\r\npartial"
+        fake = FakeSerial([payload])
+        _w, _l, _e, log_writer = run_worker(monkeypatch, qapp, fake)
+        assert log_writer.data == payload
+
+
+class TestErrorReporting:
+    def test_serial_exception_is_reported(self, qapp, monkeypatch):
+        fake = FakeSerial(read_error=serial.SerialException("device disconnected"))
+        _w, _l, errors, _lw = run_worker(monkeypatch, qapp, fake)
+        assert errors == ["device disconnected"]
+
+    def test_log_writer_failure_is_reported(self, qapp, monkeypatch):
+        """A full disk used to kill the thread silently, leaving the UI
+        showing a connection that was no longer reading anything."""
+        fake = FakeSerial([b"data\n"])
+        log_writer = RecordingLogWriter(error=OSError(28, "No space left on device"))
+        _w, _l, errors, _lw = run_worker(monkeypatch, qapp, fake, log_writer)
+        assert len(errors) == 1
+        assert "OSError" in errors[0]
+        assert "No space left" in errors[0]
+
+    def test_port_open_failure_is_reported(self, qapp, monkeypatch):
+        worker = SerialWorker("/dev/nope", 115200, RecordingLogWriter())
+
+        def boom():
+            raise serial.SerialException("could not open port")
+
+        monkeypatch.setattr(worker, "_make_serial", boom)
+        errors = []
+        worker.error_occurred.connect(errors.append)
+        worker.start()
+        assert worker.wait(2000)
+        qapp.processEvents()
+        assert errors == ["could not open port"]
+
+
+class TestTransmit:
+    def test_queued_bytes_are_written_from_the_worker_thread(self, qapp, monkeypatch):
+        fake = FakeSerial([b"hello\n"])
+        worker = SerialWorker("/dev/fake", 115200, RecordingLogWriter())
+        monkeypatch.setattr(worker, "_make_serial", lambda: fake)
+        worker.send(b"cmd\r\n")
+        worker.start()
+        time.sleep(0.2)
+        worker.stop()
+        assert b"cmd\r\n" in fake.written
+
+    def test_send_is_safe_before_the_thread_starts(self, qapp):
+        worker = SerialWorker("/dev/fake", 115200, RecordingLogWriter())
+        worker.send(b"queued\r\n")  # must not raise
+        assert worker._tx_queue.qsize() == 1
+
+
+class TestShutdown:
+    def test_stop_returns_true_for_a_responsive_loop(self, qapp, monkeypatch):
+        fake = FakeSerial([b"line\n"])
+        worker = SerialWorker("/dev/fake", 115200, RecordingLogWriter())
+        monkeypatch.setattr(worker, "_make_serial", lambda: fake)
+        worker.start()
+        time.sleep(0.1)
+        assert worker.stop() is True
+        assert worker.isFinished()
+
+    def test_stop_is_bounded_when_the_port_open_hangs(self, qapp, monkeypatch):
+        """stop() runs on the GUI thread; an unbounded wait() froze the window
+        whenever a wedged USB device stalled inside open()."""
+        release = threading.Event()
+
+        def hanging_open():
+            release.wait(30)
+            return FakeSerial()
+
+        worker = SerialWorker("/dev/wedged", 115200, RecordingLogWriter())
+        monkeypatch.setattr(worker, "_make_serial", hanging_open)
+        worker.start()
+        time.sleep(0.05)
+
+        started = time.monotonic()
+        finished_cleanly = worker.stop(timeout_ms=300)
+        elapsed = time.monotonic() - started
+
+        assert finished_cleanly is False
+        assert elapsed < 5, "stop() must not block the GUI thread indefinitely"
+
+        # Abandoned, not terminated: the object stays referenced so Python
+        # cannot destroy a QThread that is still running.
+        assert worker in serial_worker_module._orphans
+
+        release.set()
+        assert worker.wait(5000), "the abandoned thread must still finish on its own"
+
+    def test_an_abandoned_worker_reads_nothing_after_stop(self, qapp, monkeypatch):
+        """Once stop() has set _running False, a late port open must not
+        deliver lines or write to a log the window has already closed."""
+        release = threading.Event()
+        log_writer = RecordingLogWriter()
+        fake = FakeSerial([b"late data\n"])
+
+        def hanging_open():
+            release.wait(30)
+            return fake
+
+        worker = SerialWorker("/dev/wedged", 115200, log_writer)
+        monkeypatch.setattr(worker, "_make_serial", hanging_open)
+        lines = []
+        worker.new_line.connect(lines.append)
+        worker.start()
+        time.sleep(0.05)
+        worker.stop(timeout_ms=200)
+
+        release.set()
+        assert worker.wait(5000)
+        assert lines == []
+        assert log_writer.data == b""
+        assert fake.closed, "the port must still be closed cleanly"
+
+    def test_stop_is_idempotent(self, qapp, monkeypatch):
+        fake = FakeSerial([b"line\n"])
+        worker = SerialWorker("/dev/fake", 115200, RecordingLogWriter())
+        monkeypatch.setattr(worker, "_make_serial", lambda: fake)
+        worker.start()
+        time.sleep(0.1)
+        worker.stop()
+        worker.stop()
+        assert worker.isFinished()
+
+
+class TestPortConfiguration:
+    @pytest.mark.parametrize(
+        "opts,attr,expected",
+        [
+            ({"databits": 7}, "bytesize", 7),
+            ({"parity": "E"}, "parity", serial.PARITY_EVEN),
+            ({"stopbits": "2"}, "stopbits", serial.STOPBITS_TWO),
+            ({"flow": "rtscts"}, "rtscts", True),
+            ({"flow": "xonxoff"}, "xonxoff", True),
+        ],
+    )
+    def test_options_reach_the_port(self, qapp, monkeypatch, opts, attr, expected):
+        captured = {}
+
+        class Probe:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.dtr = self.rts = None
+                self.port = None
+
+            def open(self):
+                pass
+
+        monkeypatch.setattr(serial, "Serial", Probe)
+        SerialWorker("/dev/fake", 9600, RecordingLogWriter(), opts)._make_serial()
+        assert captured[attr] == expected
+
+    def test_unknown_values_fall_back_to_defaults(self, qapp, monkeypatch):
+        captured = {}
+
+        class Probe:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.dtr = self.rts = None
+                self.port = None
+
+            def open(self):
+                pass
+
+        monkeypatch.setattr(serial, "Serial", Probe)
+        opts = {"parity": "bogus", "stopbits": "bogus"}
+        SerialWorker("/dev/fake", 9600, RecordingLogWriter(), opts)._make_serial()
+        assert captured["parity"] == serial.PARITY_NONE
+        assert captured["stopbits"] == serial.STOPBITS_ONE
+
+    def test_rts_is_left_alone_under_hardware_flow_control(self, qapp, monkeypatch):
+        """RTS is driver-managed with rtscts, so the worker must not drive it."""
+        probe = {}
+
+        class Probe:
+            def __init__(self, **kwargs):
+                self.dtr = None
+                self.rts = "untouched"
+                self.port = None
+
+            def open(self):
+                probe["rts"] = self.rts
+
+        monkeypatch.setattr(serial, "Serial", Probe)
+        opts = {"flow": "rtscts", "rts": True}
+        SerialWorker("/dev/fake", 9600, RecordingLogWriter(), opts)._make_serial()
+        assert probe["rts"] == "untouched"
+
+    def test_dtr_is_set_before_open(self, qapp, monkeypatch):
+        """Boards that reset on a DTR edge need the level set pre-open."""
+        seen = {}
+
+        class Probe:
+            def __init__(self, **kwargs):
+                self.dtr = None
+                self.rts = None
+                self.port = None
+
+            def open(self):
+                seen["dtr"] = self.dtr
+
+        monkeypatch.setattr(serial, "Serial", Probe)
+        SerialWorker("/dev/fake", 9600, RecordingLogWriter(), {"dtr": False})._make_serial()
+        assert seen["dtr"] is False
+
+
+def run_worker_until_idle(monkeypatch, qapp, fake, settle=0.6):
+    """Run a worker and keep pumping past the last chunk, so the idle path runs."""
+    worker = SerialWorker("/dev/fake", 115200, RecordingLogWriter())
+    monkeypatch.setattr(worker, "_make_serial", lambda: fake)
+
+    lines, partials = [], []
+    worker.new_line.connect(lines.append)
+    worker.partial_line.connect(partials.append)
+
+    worker.start()
+    deadline = time.monotonic() + settle
+    while time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.005)
+    worker.stop()
+    qapp.processEvents()
+    return lines, partials
+
+
+class TestPartialLines:
+    """A shell prompt has no trailing newline.
+
+    Waiting for one meant it only surfaced when the *next* line arrived — one
+    press of Enter behind, which reads as a target that isn't responding.
+    """
+
+    def test_unterminated_tail_is_emitted_once_idle(self, qapp, monkeypatch):
+        fake = FakeSerial([b"boot done\r\nuart:~$ "])
+        lines, partials = run_worker_until_idle(monkeypatch, qapp, fake)
+        assert lines == ["boot done"]
+        assert partials[-1] == "uart:~$ "
+
+    def test_not_also_emitted_as_a_complete_line(self, qapp, monkeypatch):
+        """new_line stays the 'this line is final' signal."""
+        fake = FakeSerial([b"uart:~$ "])
+        lines, _partials = run_worker_until_idle(monkeypatch, qapp, fake)
+        assert lines == []
+
+    def test_repeated_while_the_tail_is_unchanged(self, qapp, monkeypatch):
+        """Idling forever must not re-emit the same tail over and over."""
+        fake = FakeSerial([b"uart:~$ "])
+        _lines, partials = run_worker_until_idle(monkeypatch, qapp, fake, settle=0.9)
+        assert partials == ["uart:~$ "]
+
+    def test_reemitted_as_the_tail_grows(self, qapp, monkeypatch):
+        fake = FakeSerial([b"uart:~$ ", b"", b"", b"ver"])
+        _lines, partials = run_worker_until_idle(monkeypatch, qapp, fake)
+        assert partials == ["uart:~$ ", "uart:~$ ver"]
+
+    def test_completing_the_line_supersedes_the_tail(self, qapp, monkeypatch):
+        fake = FakeSerial([b"uart:~$ ", b"", b"", b"version\r\n"])
+        lines, partials = run_worker_until_idle(monkeypatch, qapp, fake)
+        assert partials == ["uart:~$ "]
+        assert lines == ["uart:~$ version"]
+
+    def test_nothing_emitted_when_the_buffer_is_empty(self, qapp, monkeypatch):
+        fake = FakeSerial([b"whole line\r\n"])
+        _lines, partials = run_worker_until_idle(monkeypatch, qapp, fake)
+        assert partials == []
+
+    def test_trailing_cr_is_stripped(self, qapp, monkeypatch):
+        fake = FakeSerial([b"progress\r"])
+        _lines, partials = run_worker_until_idle(monkeypatch, qapp, fake)
+        assert partials == ["progress"]
+
+
+class TestAbandonedWorkerGoesQuiet:
+    """An abandoned worker must not be able to reach the window.
+
+    Window slots resolve self._worker when the signal *arrives*, so a late
+    signal from an abandoned worker acts on whatever session is live by then.
+    _running only silences the two signals emitted inside the run loop:
+    `connected` fires before the loop and `error_occurred` from the except
+    handlers, and a wedged open() — the reason a worker misses its deadline in
+    the first place — eventually raises.
+    """
+
+    def _abandoned_worker(self):
+        worker = SerialWorker("/dev/fake", 115200, RecordingLogWriter())
+        received = []
+        worker.new_line.connect(lambda s: received.append(("new_line", s)))
+        worker.partial_line.connect(lambda s: received.append(("partial", s)))
+        worker.error_occurred.connect(lambda s: received.append(("error", s)))
+        worker.connected.connect(lambda: received.append(("connected", None)))
+        # Simulate the thread being wedged inside open() past the deadline.
+        worker.wait = lambda *_a, **_k: False
+        assert worker.stop() is False
+        return worker, received
+
+    def test_a_late_error_is_not_delivered(self, qapp):
+        worker, received = self._abandoned_worker()
+        worker.error_occurred.emit("could not open /dev/ttyUSB0")
+        qapp.processEvents()
+        assert received == []
+
+    def test_a_late_connected_is_not_delivered(self, qapp):
+        """Otherwise the abandoned worker marks a bogus '--- reconnected ---'."""
+        worker, received = self._abandoned_worker()
+        worker.connected.emit()
+        qapp.processEvents()
+        assert received == []
+
+    def test_late_lines_are_not_delivered(self, qapp):
+        worker, received = self._abandoned_worker()
+        worker.new_line.emit("stale")
+        worker.partial_line.emit("stale tail")
+        qapp.processEvents()
+        assert received == []
+
+    def test_a_worker_that_stops_cleanly_keeps_its_connections(self, qapp, monkeypatch):
+        """Only the abandon path detaches — a normal stop needs no surgery."""
+        fake = FakeSerial([b"one\n"])
+        worker, lines, _errors, _lw = run_worker(monkeypatch, qapp, fake)
+        assert lines == ["one"]
+        received = []
+        worker.new_line.connect(received.append)
+        worker.new_line.emit("still wired")
+        assert received == ["still wired"]
+
+    def test_orphan_bookkeeping_still_works(self, qapp):
+        """finished must stay connected — it is what releases the reference."""
+        from app.serial_worker import _orphans
+
+        worker, _received = self._abandoned_worker()
+        assert worker in _orphans
+        worker.finished.emit()
+        qapp.processEvents()
+        assert worker not in _orphans

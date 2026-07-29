@@ -2,11 +2,13 @@
 """Colorizes log lines into (text, QTextCharFormat) segment lists."""
 
 import re
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 from PySide6.QtGui import QColor, QTextCharFormat
 
+from app.log_format import LEVEL_TAG_RE, detect_level, keyword_level
 from app.settings import AppSettings
+from app.theme import active_colors
 
 # Zephyr: [HH:MM:SS.mmm,uuu] <level> module: message
 # Also accepts a full-date timestamp variant seen on some boards, e.g.
@@ -18,7 +20,7 @@ _ZEPHYR_RE = re.compile(
     r'( \S+?:)'
     r'( .*)$'
 )
-_LEVEL_RE = re.compile(r'<(dbg|inf|wrn|err)>')
+_LEVEL_RE = LEVEL_TAG_RE
 
 # Syslog traditional: "Jun 14 10:23:45 hostname process[pid]: message"
 _SYSLOG_TRAD_RE = re.compile(
@@ -36,40 +38,10 @@ _SYSLOG_ISO_RE = re.compile(
     r'( .*)$'                                            # message
 )
 
-# Keyword level detection for formats that don't use <tag> syntax.
-# Matched case-insensitively; order determines priority (err before wrn).
-_KEYWORD_LEVELS: List[Tuple[re.Pattern, str]] = [
-    (re.compile(r'\b(?:error|err|fatal|critical)\b', re.IGNORECASE), 'err'),
-    (re.compile(r'\b(?:warning|warn)\b', re.IGNORECASE), 'wrn'),
-    (re.compile(r'\b(?:info|notice)\b', re.IGNORECASE), 'inf'),
-    (re.compile(r'\b(?:debug|dbg|trace)\b', re.IGNORECASE), 'dbg'),
-]
-
-
 def _fmt(hex_color: str) -> QTextCharFormat:
     f = QTextCharFormat()
     f.setForeground(QColor(hex_color))
     return f
-
-
-def _keyword_level(line: str) -> Optional[str]:
-    """Return a Zephyr level key ('err'/'wrn'/'inf'/'dbg') by keyword search, or None."""
-    for pattern, level in _KEYWORD_LEVELS:
-        if pattern.search(line):
-            return level
-    return None
-
-
-def detect_level(line: str) -> Optional[str]:
-    """Detect a line's severity level key ('dbg'/'inf'/'wrn'/'err') via an
-    explicit <tag> first, falling back to a keyword scan. Independent of the
-    active colorization mode — used by level-mode colorization and by the
-    minimap, which shows severity regardless of whether syntax or level mode
-    is selected."""
-    m = _LEVEL_RE.search(line)
-    if m:
-        return m.group(1)
-    return _keyword_level(line)
 
 
 class Colorizer:
@@ -90,7 +62,7 @@ class Colorizer:
         level = detect_level(line)
         if level:
             return [(line, _fmt(self._s.level_color(level)))]
-        return [(line, _fmt("#cccccc"))]
+        return [(line, _fmt(active_colors()["plain_text"]))]
 
     def _syntax(self, line: str) -> List[Tuple[str, QTextCharFormat]]:
         # --- Zephyr ---
@@ -98,7 +70,10 @@ class Colorizer:
         if m:
             ts, tag, mod, msg = m.group(1), m.group(2), m.group(3), m.group(4)
             lm = _LEVEL_RE.search(tag)
-            level_color = self._s.level_color(lm.group(1)) if lm else "#cccccc"
+            level_color = (
+                self._s.level_color(lm.group(1))
+                if lm else active_colors()["plain_text"]
+            )
             return [
                 (ts,  _fmt(self._s.syntax_color("timestamp"))),
                 (tag, _fmt(level_color)),
@@ -110,14 +85,14 @@ class Colorizer:
         m = _SYSLOG_ISO_RE.match(line) or _SYSLOG_TRAD_RE.match(line)
         if m:
             ts, host, proc, msg = m.group(1), m.group(2), m.group(3), m.group(4)
-            level = _keyword_level(msg)
+            level = keyword_level(msg)
             msg_color = self._s.level_color(level) if level else self._s.syntax_color("message")
             return [
                 (ts,   _fmt(self._s.syntax_color("timestamp"))),
-                (host, _fmt("#cccccc")),
+                (host, _fmt(active_colors()["plain_text"])),
                 (proc, _fmt(self._s.syntax_color("module"))),
                 (msg,  _fmt(msg_color)),
             ]
 
         # --- Fallback ---
-        return [(line, _fmt("#cccccc"))]
+        return [(line, _fmt(active_colors()["plain_text"]))]
