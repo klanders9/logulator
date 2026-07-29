@@ -306,6 +306,7 @@ class _StubWorker:
 
     def __init__(self):
         self.sent = []
+        self.stopped = False
 
     def send(self, data):
         self.sent.append(data)
@@ -314,7 +315,7 @@ class _StubWorker:
         pass
 
     def stop(self):
-        pass
+        self.stopped = True
 
 
 class TestSettingsReachEveryWindow:
@@ -850,4 +851,53 @@ class TestPendingPartialLine:
         """drop_last_line on a single-block document must not corrupt it."""
         win._on_partial_line("uart:~$ ")
         win._drop_pending_partial()
+        assert doc_line_count(win._raw_pane) == 0
+
+
+class TestAbandonedWorkerCannotKillTheLiveSession:
+    """User-visible consequence of a worker abandoned by stop().
+
+    Window slots resolve self._worker when the signal arrives. An abandoned
+    worker whose wedged open() finally raises would otherwise tear down
+    whatever session had been started since.
+    """
+
+    def _abandoned(self, win):
+        from app.serial_worker import SerialWorker
+
+        stale = SerialWorker("/dev/wedged", 115200, win._log_writer)
+        # Wire it exactly as _on_connect does.
+        stale.new_line.connect(win._on_new_line)
+        stale.partial_line.connect(win._on_partial_line)
+        stale.error_occurred.connect(win._on_serial_error)
+        stale.connected.connect(win._on_reconnected)
+        stale.wait = lambda *_a, **_k: False
+        assert stale.stop() is False
+        return stale
+
+    def test_a_late_error_leaves_the_new_session_running(self, win, monkeypatch):
+        from app import main_window as mw
+
+        stale = self._abandoned(win)
+        live = _StubWorker()
+        win._worker = live
+        monkeypatch.setattr(
+            mw.QMessageBox, "critical", lambda *a, **k: pytest.fail("dialog shown")
+        )
+
+        stale.error_occurred.emit("could not open /dev/wedged")
+
+        assert win._worker is live, "the live session was torn down"
+        assert live.stopped is False
+
+    def test_a_late_connected_adds_no_reconnect_marker(self, win):
+        stale = self._abandoned(win)
+        win._reconnecting = True
+        stale.connected.emit()
+        assert "--- reconnected ---" not in raw_texts(win)
+
+    def test_late_lines_do_not_reach_the_pane(self, win):
+        stale = self._abandoned(win)
+        stale.new_line.emit("stale line")
+        stale.partial_line.emit("stale tail")
         assert doc_line_count(win._raw_pane) == 0

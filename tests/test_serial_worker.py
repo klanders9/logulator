@@ -388,3 +388,67 @@ class TestPartialLines:
         fake = FakeSerial([b"progress\r"])
         _lines, partials = run_worker_until_idle(monkeypatch, qapp, fake)
         assert partials == ["progress"]
+
+
+class TestAbandonedWorkerGoesQuiet:
+    """An abandoned worker must not be able to reach the window.
+
+    Window slots resolve self._worker when the signal *arrives*, so a late
+    signal from an abandoned worker acts on whatever session is live by then.
+    _running only silences the two signals emitted inside the run loop:
+    `connected` fires before the loop and `error_occurred` from the except
+    handlers, and a wedged open() — the reason a worker misses its deadline in
+    the first place — eventually raises.
+    """
+
+    def _abandoned_worker(self):
+        worker = SerialWorker("/dev/fake", 115200, RecordingLogWriter())
+        received = []
+        worker.new_line.connect(lambda s: received.append(("new_line", s)))
+        worker.partial_line.connect(lambda s: received.append(("partial", s)))
+        worker.error_occurred.connect(lambda s: received.append(("error", s)))
+        worker.connected.connect(lambda: received.append(("connected", None)))
+        # Simulate the thread being wedged inside open() past the deadline.
+        worker.wait = lambda *_a, **_k: False
+        assert worker.stop() is False
+        return worker, received
+
+    def test_a_late_error_is_not_delivered(self, qapp):
+        worker, received = self._abandoned_worker()
+        worker.error_occurred.emit("could not open /dev/ttyUSB0")
+        qapp.processEvents()
+        assert received == []
+
+    def test_a_late_connected_is_not_delivered(self, qapp):
+        """Otherwise the abandoned worker marks a bogus '--- reconnected ---'."""
+        worker, received = self._abandoned_worker()
+        worker.connected.emit()
+        qapp.processEvents()
+        assert received == []
+
+    def test_late_lines_are_not_delivered(self, qapp):
+        worker, received = self._abandoned_worker()
+        worker.new_line.emit("stale")
+        worker.partial_line.emit("stale tail")
+        qapp.processEvents()
+        assert received == []
+
+    def test_a_worker_that_stops_cleanly_keeps_its_connections(self, qapp, monkeypatch):
+        """Only the abandon path detaches — a normal stop needs no surgery."""
+        fake = FakeSerial([b"one\n"])
+        worker, lines, _errors, _lw = run_worker(monkeypatch, qapp, fake)
+        assert lines == ["one"]
+        received = []
+        worker.new_line.connect(received.append)
+        worker.new_line.emit("still wired")
+        assert received == ["still wired"]
+
+    def test_orphan_bookkeeping_still_works(self, qapp):
+        """finished must stay connected — it is what releases the reference."""
+        from app.serial_worker import _orphans
+
+        worker, _received = self._abandoned_worker()
+        assert worker in _orphans
+        worker.finished.emit()
+        qapp.processEvents()
+        assert worker not in _orphans

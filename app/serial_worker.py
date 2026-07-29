@@ -5,6 +5,7 @@ filters. Outbound bytes are queued via send() and written from the worker
 thread so all serial access stays on one thread."""
 
 import queue
+import warnings
 from typing import Optional
 
 import serial
@@ -151,17 +152,50 @@ class SerialWorker(QThread):
 
         A thread that misses the deadline is abandoned rather than terminated
         — `QThread.terminate()` on a thread executing Python can leave the GIL
-        held and wedge the whole process. It is harmless to leave running:
-        `_running` is already False, so once the blocking open() returns it
-        closes the port and exits without touching the log or emitting lines.
+        held and wedge the whole process.
+
+        Abandoning is only safe once the worker can no longer be heard from.
+        `_running` being False silences `new_line` and `partial_line`, which
+        are emitted inside the run loop, but **not** `connected` (emitted the
+        moment the port opens, before the loop) or `error_occurred` (emitted
+        from the `except` handlers). The typical reason a worker misses the
+        deadline is a wedged `open()`, which eventually raises — so the one
+        case this path exists for is also the case that fires a late signal.
+        Window slots resolve `self._worker` when the signal arrives, not when
+        it was connected, so a late error from an abandoned worker would tear
+        down whatever session is live by then.
 
         Returns True if the thread finished within the deadline.
         """
         self._running = False
         if self.wait(timeout_ms):
             return True
+        self._detach_signals()
         # Destroying a running QThread crashes, so hold a reference until the
         # thread actually finishes.
         _orphans.add(self)
         self.finished.connect(lambda: _orphans.discard(self))
         return False
+
+    def _detach_signals(self) -> None:
+        """Disconnect every outbound signal, so this worker goes quiet.
+
+        `finished` is left alone — the orphan bookkeeping still needs it.
+
+        A signal with no receivers only *warns* rather than raising, so the
+        warning is suppressed instead of caught; `QObject.receivers()` takes a
+        signature string in PySide6, not a signal, which is worse to keep in
+        step with the signal list than just doing it unconditionally.
+        """
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            for signal in (
+                self.new_line,
+                self.partial_line,
+                self.error_occurred,
+                self.connected,
+            ):
+                try:
+                    signal.disconnect()
+                except (RuntimeError, TypeError):
+                    pass  # nothing was connected
