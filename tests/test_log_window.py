@@ -318,6 +318,53 @@ class _StubWorker:
         self.stopped = True
 
 
+class TestRawPanePlaceholder:
+    """The 'press Connect' hint must not sit there during a live session.
+
+    Qt shows a placeholder whenever the document is empty, so before this it
+    stayed up after connecting until the first byte happened to arrive.
+    """
+
+    def _connect(self, win, monkeypatch, tmp_path):
+        from app import main_window as mw
+
+        win._settings.set_log_dir(str(tmp_path / "logs"))
+        monkeypatch.setattr(mw, "SerialWorker", lambda *a, **k: _StubWorker())
+        win._on_connect("/dev/nonexistent", 115200)
+
+    def test_hint_shows_before_connecting(self, win):
+        assert "Connect" in win._raw_pane.placeholderText()
+
+    def test_hint_clears_on_connect(self, win, tmp_path, monkeypatch):
+        self._connect(win, monkeypatch, tmp_path)
+        try:
+            assert win._raw_pane.placeholderText() == ""
+            assert doc_line_count(win._raw_pane) == 0, "no data has arrived yet"
+        finally:
+            win._on_disconnect(prompt_clear=False)
+
+    def test_hint_returns_on_disconnect(self, win, tmp_path, monkeypatch):
+        self._connect(win, monkeypatch, tmp_path)
+        win._on_disconnect(prompt_clear=False)
+        assert "Connect" in win._raw_pane.placeholderText()
+
+    def test_hint_returns_after_a_failed_connect(self, win, tmp_path, monkeypatch):
+        """A refused connection never started a session, so the hint stands."""
+        from PySide6.QtWidgets import QMessageBox
+
+        blocked = tmp_path / "blocked"
+        blocked.mkdir()
+        blocked.chmod(0o500)
+        win._settings.set_log_dir(str(blocked / "logs"))
+        monkeypatch.setattr(QMessageBox, "critical", lambda *a, **k: None)
+        try:
+            win._on_connect("/dev/nonexistent", 115200)
+        finally:
+            blocked.chmod(0o700)
+
+        assert "Connect" in win._raw_pane.placeholderText()
+
+
 class TestSettingsReachEveryWindow:
     """All windows share one AppSettings, so a change must refresh them all."""
 

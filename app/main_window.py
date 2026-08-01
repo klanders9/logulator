@@ -35,6 +35,14 @@ from app.ui.serial_panel import SerialPanel
 from app.ui.settings_sidebar import SettingsSidebar
 
 
+# Shown in the raw pane while it is empty *and* no session is running. Qt
+# shows a placeholder whenever the document is empty, which during a live
+# session means it sits there telling the user to press Connect until the
+# first byte happens to arrive. _on_connect clears it and _on_disconnect puts
+# it back, so it only ever appears when it is actually the next thing to do.
+_RAW_PANE_HINT = "Select a port and press Connect — or drop a .log file here."
+
+
 def _reveal_in_file_manager(path: Path) -> None:
     """Show the file selected in Finder / Explorer / the default file manager."""
     if sys.platform == "darwin":
@@ -88,9 +96,7 @@ class MainWindow(LogWindowMixin, QMainWindow):
         self._build_log_panes(
             font,
             cap=self._settings.buffer_cap(),
-            raw_placeholder=(
-                "Select a port and press Connect — or drop a .log file here."
-            ),
+            raw_placeholder=_RAW_PANE_HINT,
             filtered_placeholder="No lines match the active filters.",
         )
 
@@ -246,6 +252,9 @@ class MainWindow(LogWindowMixin, QMainWindow):
         self._connect_time = datetime.now()
         path = self._log_writer.current_path
         self._status_log.setText(f"Log: {path.name}" if path else "Log: unknown")
+        # The session has started; "press Connect" is no longer the next step,
+        # even though no bytes have arrived to fill the pane yet.
+        self._raw_pane.setPlaceholderText("")
 
         self._worker = SerialWorker(port, baud, self._log_writer, self._reconnect_options)
         self._worker.new_line.connect(self._on_new_line)
@@ -276,6 +285,7 @@ class MainWindow(LogWindowMixin, QMainWindow):
         self._set_status_log_clickable(False)
         self._status_log.setText("Not connected")
         self._status_stats.setText("")
+        self._raw_pane.setPlaceholderText(_RAW_PANE_HINT)
 
         if prompt_clear:
             reply = QMessageBox.question(
