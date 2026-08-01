@@ -166,6 +166,13 @@ class SettingsSidebar(QWidget):
         self._echo_empty_cb.toggled.connect(self._s.set_tx_echo_empty)
         layout.addWidget(self._echo_empty_cb)
 
+        layout.addWidget(self._subsection_label("Marks"))
+        layout.addLayout(self._color_row(
+            "Mark lines (>>>MARK)",
+            lambda: self._s.mark_color(),
+            lambda c: self._s.set_mark_color(c),
+        ))
+
         layout.addWidget(self._subsection_label("Minimap"))
         self._minimap_cb = QCheckBox("Show minimap")
         self._minimap_cb.setChecked(settings.minimap_enabled())

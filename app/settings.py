@@ -29,6 +29,7 @@ class AppSettings:
     }
 
     _TX_DEFAULT = "#8be9fd"
+    _MARK_DEFAULT = "#ff79c6"
 
     _BUFFER_DEFAULT = 100_000
     _BUFFER_MIN = 1_000
@@ -320,6 +321,14 @@ class AppSettings:
 
     def set_tx_color(self, color: str) -> None:
         self._qs.setValue("color/tx", color)
+
+    # --- Marks ---
+
+    def mark_color(self) -> str:
+        return self._qs.value("color/mark", self._MARK_DEFAULT)
+
+    def set_mark_color(self, color: str) -> None:
+        self._qs.setValue("color/mark", color)
 
     # --- Font ---
 

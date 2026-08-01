@@ -299,6 +299,47 @@ class TestTransmitRecords:
         assert writer.current_path.read_bytes() == b">> fresh\n"
 
 
+class TestMarkRecords:
+    """Marks use the same record path as TX: never spliced into an RX line."""
+
+    MARK = ">>>MARK - 2026-08-01T14:23:45Z: power cycled"
+
+    def test_record_is_written_verbatim(self, writer, tmp_path):
+        writer.open_session()
+        writer.write_record(self.MARK)
+        writer.close()
+        assert _read_only_log(tmp_path) == self.MARK + "\n"
+
+    def test_record_starts_a_fresh_line_when_mid_line(self, writer, tmp_path):
+        writer.open_session()
+        writer.write(b"partial received line")
+        writer.write_record(self.MARK)
+        writer.close()
+        assert _read_only_log(tmp_path) == (
+            "partial received line\n" + self.MARK + "\n"
+        )
+
+    def test_received_bytes_after_a_mark_are_untouched(self, writer, tmp_path):
+        """The extension may add a newline of its own; RX stays verbatim."""
+        writer.open_session()
+        writer.write(b"abc")
+        writer.write_record(self.MARK)
+        writer.write(b"def\n")
+        writer.close()
+        text = _read_only_log(tmp_path)
+        assert text.endswith("def\n")
+        assert "abc" in text and "def" in text
+
+    def test_record_on_a_closed_writer_is_a_no_op(self, writer):
+        writer.write_record(self.MARK)  # must not raise
+
+
+def _read_only_log(tmp_path) -> str:
+    logs = sorted((tmp_path / "logs").glob("*.log"))
+    assert len(logs) == 1
+    return logs[0].read_text()
+
+
 class TestThreadSafety:
     def test_concurrent_rx_and_tx_never_interleave_within_a_record(self, writer):
         """Every line must be either a whole RX line or a whole TX record."""

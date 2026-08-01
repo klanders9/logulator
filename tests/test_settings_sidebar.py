@@ -3,6 +3,7 @@
 
 import pytest
 from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QLabel
 
 from app.ui.settings_sidebar import SettingsSidebar
 
@@ -142,3 +143,16 @@ class TestAnsiMode:
         w = SettingsSidebar(settings)
         qtbot.addWidget(w)
         assert w._ansi_combo.currentText() == "Show raw"
+
+
+class TestMarkColorRow:
+    def test_mark_color_row_is_present(self, sidebar):
+        labels = [
+            w.text()
+            for w in sidebar.findChildren(QLabel)
+            if w.text().startswith("Mark lines")
+        ]
+        assert labels, "the mark color must be configurable like the TX color"
+
+    def test_default_is_distinct_from_tx(self, settings):
+        assert settings.mark_color() != settings.tx_color()

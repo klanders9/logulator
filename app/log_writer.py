@@ -86,18 +86,22 @@ class LogWriter:
             self._write(data)
 
     def write_tx_line(self, text: str) -> None:
-        """Record a transmitted line, marked with '>> '.
+        """Record a transmitted line, marked with '>> '."""
+        self.write_record(">> " + text)
+
+    def write_record(self, line: str) -> None:
+        """Append a logulator-generated line (a TX echo or a user mark).
 
         Starts a new line first when the file is mid-line. Received chunks
-        routinely end partway through a line, so without this a sent command
-        would be spliced into the middle of an incoming one, leaving both
-        unreadable. The inserted newline is part of the TX extension; received
-        bytes themselves are still written unmodified and in order.
+        routinely end partway through a line, so without this a record would
+        be spliced into the middle of an incoming one, leaving both
+        unreadable. The inserted newline belongs to the record; received bytes
+        themselves are still written unmodified and in order.
         """
         with self._lock:
             if not self._at_line_start:
                 self._write(b"\n")
-            self._write(b">> " + text.encode("utf-8") + b"\n")
+            self._write(line.encode("utf-8") + b"\n")
 
     def _write(self, data: bytes) -> None:
         """Caller must hold the lock."""

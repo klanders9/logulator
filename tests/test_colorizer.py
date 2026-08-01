@@ -1,10 +1,18 @@
 # Copyright (c) 2026 Kevin Landers. SPDX-License-Identifier: MIT
 """Tests for level detection and line colorization."""
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from app.colorizer import Colorizer
-from app.log_format import detect_level
+from app.log_format import (
+    MARK_PREFIX,
+    TX_PREFIX,
+    detect_level,
+    format_mark,
+    is_generated,
+)
 
 ZEPHYR = "[00:00:01.234,567] <inf> my_module: Some message here"
 ZEPHYR_NOSPACE = "[2026-07-06 11:21:45.726]<inf> telit_modem: state=0"
@@ -78,6 +86,77 @@ class TestTxLines:
         settings.set_color_mode("syntax")
         segs = colorizer.colorize(">> " + ZEPHYR)
         assert len(segs) == 1
+
+
+class TestMarkFormat:
+    WHEN = datetime(2026, 8, 1, 14, 23, 45, tzinfo=timezone.utc)
+
+    def test_shape(self):
+        assert format_mark("disconnecting external power", self.WHEN) == (
+            ">>>MARK - 2026-08-01T14:23:45Z: disconnecting external power"
+        )
+
+    def test_empty_note_leaves_marker_and_time(self):
+        assert format_mark("", self.WHEN) == ">>>MARK - 2026-08-01T14:23:45Z"
+
+    def test_whitespace_note_counts_as_empty(self):
+        assert format_mark("   ", self.WHEN) == ">>>MARK - 2026-08-01T14:23:45Z"
+
+    def test_note_is_trimmed(self):
+        assert format_mark("  power off  ", self.WHEN).endswith(": power off")
+
+    def test_local_time_is_converted_to_utc(self):
+        """The point of the timestamp is comparability with other machines."""
+        local = datetime(
+            2026, 8, 1, 9, 23, 45, tzinfo=timezone(timedelta(hours=-5))
+        )
+        assert format_mark("x", local).startswith(">>>MARK - 2026-08-01T14:23:45Z")
+
+    def test_default_time_is_now_in_utc(self):
+        produced = format_mark("x")
+        assert produced.startswith(">>>MARK - ")
+        stamp = produced[len(">>>MARK - "):].split(":", 1)[0]
+        assert stamp[:4] == datetime.now(timezone.utc).strftime("%Y")
+
+    def test_does_not_collide_with_the_tx_marker(self):
+        """Both start with '>>', so the distinction is the third character."""
+        line = format_mark("x", self.WHEN)
+        assert line.startswith(MARK_PREFIX)
+        assert not line.startswith(TX_PREFIX)
+        assert is_generated(line) and is_generated(">> reboot")
+
+
+class TestMarkLines:
+    MARK = ">>>MARK - 2026-08-01T14:23:45Z: power cycled"
+
+    @pytest.mark.parametrize("mode", ["level", "syntax"])
+    def test_mark_color_in_both_modes(self, colorizer, settings, mode):
+        settings.set_color_mode(mode)
+        segs = colorizer.colorize(self.MARK)
+        assert texts(segs) == [self.MARK]
+        assert colors(segs) == [settings.mark_color()]
+
+    def test_mark_is_distinct_from_tx(self, colorizer, settings):
+        assert settings.mark_color() != settings.tx_color()
+        assert colors(colorizer.colorize(self.MARK)) != colors(
+            colorizer.colorize(">> reboot")
+        )
+
+    def test_a_note_that_looks_like_a_log_line_stays_one_segment(
+        self, colorizer, settings
+    ):
+        """Checked before any parsing, so an embedded format cannot split it."""
+        settings.set_color_mode("syntax")
+        segs = colorizer.colorize(">>>MARK - 2026-08-01T14:23:45Z: " + ZEPHYR)
+        assert len(segs) == 1
+
+    def test_a_note_mentioning_an_error_keeps_the_mark_color(
+        self, colorizer, settings
+    ):
+        """Keyword level detection must not repaint a mark red."""
+        settings.set_color_mode("level")
+        segs = colorizer.colorize(">>>MARK - 2026-08-01T14:23:45Z: error injected")
+        assert colors(segs) == [settings.mark_color()]
 
 
 class TestLevelMode:

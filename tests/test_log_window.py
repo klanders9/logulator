@@ -318,6 +318,128 @@ class _StubWorker:
         self.stopped = True
 
 
+class TestMarks:
+    """A mark is recorded and echoed, never transmitted."""
+
+    def _connect(self, win, monkeypatch, tmp_path):
+        from app import main_window as mw
+
+        win._settings.set_log_dir(str(tmp_path / "logs"))
+        self.worker = _StubWorker()
+        monkeypatch.setattr(mw, "SerialWorker", lambda *a, **k: self.worker)
+        win._on_connect("/dev/nonexistent", 115200)
+
+    def _mark(self, win, note):
+        win._mark_bar._input.setText(note)
+        win._mark_bar._commit()
+
+    def test_mark_reaches_the_pane_and_the_log(self, win, tmp_path, monkeypatch):
+        self._connect(win, monkeypatch, tmp_path)
+        path = win._log_writer.current_path
+        try:
+            self._mark(win, "disconnecting external power")
+        finally:
+            win._on_disconnect(prompt_clear=False)
+
+        line = raw_texts(win)[-1]
+        assert line.startswith(">>>MARK - ")
+        assert line.endswith(": disconnecting external power")
+        assert path.read_text().splitlines() == [line]
+
+    def test_mark_is_never_transmitted(self, win, tmp_path, monkeypatch):
+        """The whole reason this is not a send-bar button."""
+        self._connect(win, monkeypatch, tmp_path)
+        try:
+            self._mark(win, "power off")
+            assert self.worker.sent == []
+        finally:
+            win._on_disconnect(prompt_clear=False)
+
+    def test_mark_is_not_counted_as_a_received_line(
+        self, win, tmp_path, monkeypatch
+    ):
+        self._connect(win, monkeypatch, tmp_path)
+        try:
+            self._mark(win, "x")
+            assert win._line_count == 0
+        finally:
+            win._on_disconnect(prompt_clear=False)
+
+    def test_empty_note_still_records_a_landmark(self, win, tmp_path, monkeypatch):
+        self._connect(win, monkeypatch, tmp_path)
+        try:
+            self._mark(win, "")
+            assert raw_texts(win)[-1].startswith(">>>MARK - ")
+            assert not raw_texts(win)[-1].endswith(":")
+        finally:
+            win._on_disconnect(prompt_clear=False)
+
+    def test_bar_stays_open_and_clears_for_the_next_mark(
+        self, win, tmp_path, monkeypatch
+    ):
+        self._connect(win, monkeypatch, tmp_path)
+        win._mark_action.setChecked(True)
+        try:
+            self._mark(win, "step 1")
+            assert win._mark_bar.isVisible()
+            assert win._mark_bar._input.text() == ""
+            self._mark(win, "step 2")
+            assert [t.split(": ")[-1] for t in raw_texts(win)] == ["step 1", "step 2"]
+        finally:
+            win._on_disconnect(prompt_clear=False)
+
+    def test_mark_is_refused_without_an_open_session(self, win):
+        """Nothing is connected, so there is no log for a mark to live in."""
+        self._mark(win, "orphan")
+        assert doc_line_count(win._raw_pane) == 0
+
+    def test_mark_survives_the_auto_reconnect_gap(self, win, tmp_path, monkeypatch):
+        """No worker, but the log is open — and this is when marks matter most."""
+        self._connect(win, monkeypatch, tmp_path)
+        try:
+            win._auto_reconnect = True
+            win._on_serial_error("device disappeared")
+            assert win._worker is None
+            self._mark(win, "pulled power")
+            assert raw_texts(win)[-1].endswith(": pulled power")
+        finally:
+            win._reconnect_timer.stop()
+            win._on_disconnect(prompt_clear=False)
+
+    def test_mark_action_is_disabled_until_connected(
+        self, win, tmp_path, monkeypatch
+    ):
+        assert not win._mark_action.isEnabled()
+        self._connect(win, monkeypatch, tmp_path)
+        assert win._mark_action.isEnabled()
+        win._on_disconnect(prompt_clear=False)
+        assert not win._mark_action.isEnabled()
+
+    def test_escape_unchecks_the_toolbar_action(self, win):
+        win._mark_action.setChecked(True)
+        assert win._mark_bar.isVisible()
+        win._mark_bar._close()
+        assert not win._mark_action.isChecked()
+
+    def test_mark_passes_through_the_filters(self, win, tmp_path, monkeypatch):
+        """A mark is a view-transform subject like any other line."""
+        self._connect(win, monkeypatch, tmp_path)
+        try:
+            win._on_filters_changed(
+                [{"type": "substring", "value": "MARK", "mode": "include"}], "OR"
+            )
+            feed(win, *ZEPHYR_LINES)
+            self._mark(win, "power off")
+            assert filtered_texts(win) == [raw_texts(win)[-1]]
+        finally:
+            win._on_disconnect(prompt_clear=False)
+
+    def test_mark_gets_its_own_minimap_band(self, win, tmp_path, monkeypatch):
+        color = win._minimap_color_for(">>>MARK - 2026-08-01T00:00:00Z: x")
+        assert color.name() == win._settings.mark_color()
+        assert color.name() != win._settings.tx_color()
+
+
 class TestLogFilenamePrefix:
     """The prefix is per-window state read off the panel, not a shared setting."""
 

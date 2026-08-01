@@ -25,7 +25,7 @@ from PySide6.QtWidgets import QApplication, QSplitter
 
 from app import ansi, filter_engine
 from app.colorizer import Colorizer
-from app.log_format import detect_level
+from app.log_format import MARK_PREFIX, TX_PREFIX, detect_level
 from app.settings import AppSettings
 from app.theme import active_colors, apply_palette
 from app.ui.filter_bar import FilterBar
@@ -441,7 +441,9 @@ class LogWindowMixin:
         syntax mode, so this goes through detect_level() rather than the
         Colorizer.
         """
-        if line.startswith(">> "):
+        if line.startswith(MARK_PREFIX):
+            return QColor(self._settings.mark_color())
+        if line.startswith(TX_PREFIX):
             return QColor(self._settings.tx_color())
         if line.startswith("---"):
             return QColor(active_colors()["separator"])
