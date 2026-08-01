@@ -237,6 +237,9 @@ class MainWindow(LogWindowMixin, QMainWindow):
         # the source of truth, so a silent unlogged session is worse than none.
         log_dir = self._settings.log_dir()
         self._log_writer.set_log_dir(log_dir)
+        # Read off the panel rather than settings so each window keeps its own
+        # prefix; settings only supplies the value the field starts out with.
+        self._log_writer.set_prefix(self._serial_panel.log_prefix())
         try:
             self._log_writer.open_session()
         except OSError as exc:

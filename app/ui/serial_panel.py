@@ -8,16 +8,19 @@ Last-used port and baud are persisted and restored on launch."""
 from typing import Optional
 
 import serial.tools.list_ports
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QRegularExpression, Signal
+from PySide6.QtGui import QRegularExpressionValidator
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QWidget,
 )
 
+from app.log_writer import sanitize_prefix
 from app.settings import AppSettings
 from app.ui.serial_config_dialog import SerialConfigDialog, config_summary, config_tooltip
 
@@ -33,6 +36,12 @@ _DOT_TOOLTIPS = {
     "connected": "Connected",
     "reconnecting": "Reconnecting…",
 }
+
+# Everything except path separators, the characters Windows reserves in a
+# filename, and control bytes. Blocking them at the keyboard is friendlier
+# than sanitizing behind the user's back; LogWriter still sanitizes what it
+# is handed, for the case of a hand-edited settings file.
+_PREFIX_PATTERN = QRegularExpression(r'[^<>:"/\\|?*\x00-\x1f]{0,64}')
 
 
 class SerialPanel(QWidget):
@@ -67,6 +76,16 @@ class SerialPanel(QWidget):
         self._config_btn.clicked.connect(self._on_config_clicked)
         self._update_config_button()
 
+        # Per-window, so one window can log featureA_ while another logs
+        # ulcplus_. Persisted on connect only as the default for next launch.
+        self._prefix_edit = QLineEdit(self._settings.log_prefix())
+        self._prefix_edit.setValidator(QRegularExpressionValidator(_PREFIX_PATTERN))
+        self._prefix_edit.setMaximumWidth(110)
+        self._prefix_edit.setToolTip(
+            "Session log filename prefix — the file is named\n"
+            "<prefix>YYYYMMDD_HHMMSS.log. Applies to the next connect."
+        )
+
         self._connect_btn = QPushButton("Connect")
         self._connect_btn.setDefault(True)
         self._connect_btn.clicked.connect(self._on_connect_toggle)
@@ -81,6 +100,8 @@ class SerialPanel(QWidget):
         layout.addWidget(QLabel("Baud:"))
         layout.addWidget(self._baud_combo)
         layout.addWidget(self._config_btn)
+        layout.addWidget(QLabel("Log:"))
+        layout.addWidget(self._prefix_edit)
         layout.addWidget(self._connect_btn)
         layout.addWidget(self._auto_reconnect_cb)
         clear_btn = QPushButton("Clear")
@@ -131,6 +152,7 @@ class SerialPanel(QWidget):
                 baud = int(self._baud_combo.currentText())
                 self._settings.set_last_port(port)
                 self._settings.set_last_baud(baud)
+                self._settings.set_log_prefix(self.log_prefix())
                 self.connect_requested.emit(port, baud)
 
     def set_connected(self, connected: bool):
@@ -139,7 +161,12 @@ class SerialPanel(QWidget):
         self._port_combo.setEnabled(not connected)
         self._baud_combo.setEnabled(not connected)
         self._config_btn.setEnabled(not connected)
+        self._prefix_edit.setEnabled(not connected)
         self.set_status("connected" if connected else "idle")
+
+    def log_prefix(self) -> str:
+        """Filename prefix for this window's next session log."""
+        return sanitize_prefix(self._prefix_edit.text())
 
     def set_status(self, state: str) -> None:
         """state: 'idle' | 'connected' | 'reconnecting' — drives the dot."""

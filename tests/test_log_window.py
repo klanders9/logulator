@@ -318,6 +318,57 @@ class _StubWorker:
         self.stopped = True
 
 
+class TestLogFilenamePrefix:
+    """The prefix is per-window state read off the panel, not a shared setting."""
+
+    def _connect(self, win, monkeypatch, tmp_path, prefix):
+        from app import main_window as mw
+
+        win._settings.set_log_dir(str(tmp_path / "logs"))
+        win._serial_panel._prefix_edit.setText(prefix)
+        monkeypatch.setattr(mw, "SerialWorker", lambda *a, **k: _StubWorker())
+        win._on_connect("/dev/nonexistent", 115200)
+
+    def test_panel_prefix_names_the_session_log(self, win, tmp_path, monkeypatch):
+        self._connect(win, monkeypatch, tmp_path, "featureA_")
+        try:
+            assert win._log_writer.current_path.name.startswith("featureA_")
+        finally:
+            win._on_disconnect(prompt_clear=False)
+
+    def test_a_change_applies_to_the_next_connect(self, win, tmp_path, monkeypatch):
+        self._connect(win, monkeypatch, tmp_path, "first_")
+        win._on_disconnect(prompt_clear=False)
+        self._connect(win, monkeypatch, tmp_path, "second_")
+        try:
+            assert win._log_writer.current_path.name.startswith("second_")
+        finally:
+            win._on_disconnect(prompt_clear=False)
+
+    def test_windows_keep_separate_prefixes(self, win, tmp_path, monkeypatch, qtbot):
+        """Two windows share one AppSettings but must not share this."""
+        other = MainWindow()
+        qtbot.addWidget(other)
+        other.show()
+        try:
+            self._connect(win, monkeypatch, tmp_path, "featureA_")
+            self._connect(other, monkeypatch, tmp_path, "ulcplus_")
+            assert win._log_writer.current_path.name.startswith("featureA_")
+            assert other._log_writer.current_path.name.startswith("ulcplus_")
+        finally:
+            win._on_disconnect(prompt_clear=False)
+            other._on_disconnect(prompt_clear=False)
+            other.close()
+
+    def test_prefix_is_locked_while_connected(self, win, tmp_path, monkeypatch):
+        self._connect(win, monkeypatch, tmp_path, "featureA_")
+        try:
+            assert not win._serial_panel._prefix_edit.isEnabled()
+        finally:
+            win._on_disconnect(prompt_clear=False)
+        assert win._serial_panel._prefix_edit.isEnabled()
+
+
 class TestRawPanePlaceholder:
     """The 'press Connect' hint must not sit there during a live session.
 

@@ -1,9 +1,12 @@
 # Copyright (c) 2026 Kevin Landers. SPDX-License-Identifier: MIT
 """Tests for LogWriter session handling."""
 
+import re
+from datetime import datetime
+
 import pytest
 
-from app.log_writer import LogWriter
+from app.log_writer import LogWriter, sanitize_prefix
 
 
 @pytest.fixture
@@ -152,6 +155,92 @@ class TestLogDirectory:
                 w.open_session()
         finally:
             blocked.chmod(0o700)
+
+
+class TestFilenamePrefix:
+    _STAMP = re.compile(r"\d{8}_\d{6}")
+
+    def test_default_matches_the_historical_name(self, writer):
+        writer.open_session()
+        assert writer.current_path.name.startswith("session_")
+
+    def test_custom_prefix_is_used(self, tmp_path):
+        w = LogWriter(str(tmp_path / "logs"), prefix="featureA_")
+        w.open_session()
+        try:
+            assert w.current_path.name.startswith("featureA_")
+            assert self._STAMP.search(w.current_path.name)
+        finally:
+            w.close()
+
+    def test_set_prefix_applies_to_the_next_session(self, writer):
+        writer.open_session()
+        writer.close()
+        writer.set_prefix("ulcplus_")
+        writer.open_session()
+        assert writer.current_path.name.startswith("ulcplus_")
+
+    def test_empty_prefix_leaves_a_bare_timestamp(self, tmp_path):
+        """A nameless file is impossible — the timestamp is always appended."""
+        w = LogWriter(str(tmp_path / "logs"), prefix="")
+        w.open_session()
+        try:
+            assert self._STAMP.fullmatch(w.current_path.stem)
+        finally:
+            w.close()
+
+    def test_collision_suffix_still_applies(self, tmp_path, monkeypatch):
+        """Two sessions in one second must not share a file, prefix or not."""
+        import app.log_writer as lw
+
+        fixed = datetime(2026, 8, 1, 14, 30, 12)
+
+        class _Frozen(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed
+
+        monkeypatch.setattr(lw, "datetime", _Frozen)
+        w = LogWriter(str(tmp_path / "logs"), prefix="run-")
+        try:
+            w.open_session()
+            first = w.current_path
+            w.open_session()
+            assert first.name == "run-20260801_143012.log"
+            assert w.current_path.name == "run-20260801_143012_2.log"
+        finally:
+            w.close()
+
+
+class TestPrefixSanitizing:
+    """The settings file is hand-editable, so the prefix cannot be trusted."""
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("featureA_", "featureA_"),
+            ("../../escape_", "....escape_"),
+            ("a/b\\c_", "abc_"),
+            ('bad<>:"|?*chars_', "badchars_"),
+            ("  padded  ", "padded"),
+            ("nul\x00byte_", "nulbyte_"),
+        ],
+    )
+    def test_sanitize(self, raw, expected):
+        assert sanitize_prefix(raw) == expected
+
+    def test_length_is_capped(self):
+        assert len(sanitize_prefix("x" * 500)) == 64
+
+    def test_a_separator_prefix_cannot_redirect_the_write(self, tmp_path):
+        """Whatever is typed, the log lands in the configured directory."""
+        target = tmp_path / "logs"
+        w = LogWriter(str(target), prefix="../../../etc/passwd_")
+        w.open_session()
+        try:
+            assert w.current_path.parent == target
+        finally:
+            w.close()
 
 
 class TestTransmitRecords:

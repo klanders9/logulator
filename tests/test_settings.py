@@ -144,6 +144,20 @@ class TestLogDir:
         assert settings.log_dir() == str(Path.home() / "logs")
 
 
+class TestLogPrefix:
+    def test_defaults_to_session(self, settings):
+        assert settings.log_prefix() == "session_"
+
+    def test_roundtrip(self, settings):
+        settings.set_log_prefix("featureA_")
+        assert settings.log_prefix() == "featureA_"
+
+    def test_empty_is_kept_rather_than_defaulted(self, settings):
+        """Unlike log_dir, a bare timestamp is a valid choice, not an unset."""
+        settings.set_log_prefix("")
+        assert settings.log_prefix() == ""
+
+
 class TestTxEchoEmpty:
     def test_off_by_default(self, settings):
         assert settings.tx_echo_empty() is False

@@ -4,10 +4,30 @@ at the start of each connection session. Append-only. Flushes after every
 write so the log survives a crash."""
 
 import itertools
+import re
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+DEFAULT_PREFIX = "session_"
+
+# The prefix becomes part of a filename, so path separators and the characters
+# Windows reserves are dropped rather than escaped: a prefix is a label, and
+# anything that could redirect the write is a bug rather than a feature.
+_ILLEGAL_PREFIX_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_PREFIX_MAX = 64
+
+
+def sanitize_prefix(prefix: str) -> str:
+    """Reduce a user-supplied log filename prefix to something safe to join.
+
+    The UI already restricts what can be typed; this is the guarantee for the
+    settings file, which is hand-editable. A timestamp is always appended, so
+    the result can be empty without producing a nameless file — and can never
+    come out as '.' or '..'.
+    """
+    return _ILLEGAL_PREFIX_CHARS.sub("", str(prefix)).strip()[:_PREFIX_MAX]
 
 
 class LogWriter:
@@ -18,8 +38,9 @@ class LogWriter:
     from interleaving and makes the open/closed check atomic against close().
     """
 
-    def __init__(self, log_dir: str = "logs"):
+    def __init__(self, log_dir: str = "logs", prefix: str = DEFAULT_PREFIX):
         self._log_dir = Path(log_dir).expanduser()
+        self._prefix = sanitize_prefix(prefix)
         self._file = None
         self._path: Optional[Path] = None
         self._lock = threading.RLock()
@@ -30,6 +51,10 @@ class LogWriter:
     def set_log_dir(self, log_dir: str) -> None:
         """Change the destination directory. Takes effect on the next session."""
         self._log_dir = Path(log_dir).expanduser()
+
+    def set_prefix(self, prefix: str) -> None:
+        """Change the filename prefix. Takes effect on the next session."""
+        self._prefix = sanitize_prefix(prefix)
 
     def open_session(self):
         """Start a new session log, always in a file of its own.
@@ -43,7 +68,7 @@ class LogWriter:
         with self._lock:
             self.close()
             self._log_dir.mkdir(parents=True, exist_ok=True)
-            stem = datetime.now().strftime("session_%Y%m%d_%H%M%S")
+            stem = self._prefix + datetime.now().strftime("%Y%m%d_%H%M%S")
             for attempt in itertools.count(1):
                 suffix = "" if attempt == 1 else f"_{attempt}"
                 path = self._log_dir / f"{stem}{suffix}.log"

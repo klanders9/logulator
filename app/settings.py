@@ -7,6 +7,10 @@ from typing import Optional
 
 from PySide6.QtCore import QByteArray, QSettings
 
+# LogWriter owns the naming scheme and imports nothing from here, so taking
+# the default from it keeps one definition rather than two that can drift.
+from app.log_writer import DEFAULT_PREFIX as _LOG_PREFIX_DEFAULT
+
 
 class AppSettings:
     _ORG = "logulator"
@@ -179,6 +183,19 @@ class AppSettings:
     def set_log_dir(self, val: str) -> None:
         """Set the session log directory. An empty value restores the default."""
         self._qs.setValue("logging/dir", str(val))
+
+    def log_prefix(self) -> str:
+        """Filename prefix for session logs, e.g. 'session_' → session_….log.
+
+        Unlike log_dir, an empty value is meaningful and kept: the timestamp
+        alone is a valid name. LogWriter sanitizes whatever lands here before
+        using it, since this file is hand-editable.
+        """
+        v = self._qs.value("logging/prefix", _LOG_PREFIX_DEFAULT)
+        return v if isinstance(v, str) else _LOG_PREFIX_DEFAULT
+
+    def set_log_prefix(self, val: str) -> None:
+        self._qs.setValue("logging/prefix", str(val))
 
     # Filter rules are deliberately not persisted — they are per-session view
     # state in both windows, so there is no filter_* accessor here.
