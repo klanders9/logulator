@@ -25,7 +25,9 @@ A cross-platform desktop GUI for monitoring and filtering serial log output.
 - File viewer: filter bar, inline find (Ctrl+F), **Follow mode** to tail live-appended files, and **⚙ Settings** dialog
 - Recent Files submenu (last 10 opened files, greyed out if unavailable)
 - Help → About dialog with version, license, and GitHub link
-- User-selectable app theme (Dracula or VS Code Dark) and font size in the settings sidebar; switches live; theme-matched pane backgrounds
+- **MARK lines** (Ctrl+M): drop a UTC-timestamped note into the log to record something that happened outside it — pulling power, swapping an antenna, starting a test step
+- Configurable session-log filename prefix, per window, so one monitor can write `featureA_…` while another writes `ulcplus_…`
+- User-selectable app theme (Dracula, VS Code Dark, VS Code Light, Solarized Light, or **System** to follow the OS) and font size in the settings sidebar; switches live; log colours are tuned per theme, so the light themes are readable out of the box
 - Status bar shows session runtime, line count, and log file size; click the filename to reveal it in Finder/Explorer
 
 ## Requirements
@@ -46,14 +48,15 @@ python main.py
 ## Usage
 
 1. Select a serial port and baud rate, then click **Connect**
-2. Log output streams into the display area and is written to `~/logs/session_YYYYMMDD_HHMMSS.log`
+2. Log output streams into the display area and is written to `~/logs/session_YYYYMMDD_HHMMSS.log`. Change the `Log:` field next to the port controls to use a different prefix — `featureA_`, `ulcplus_` — applied on the next connect
 3. Add filter rules using the filter bar:
    - **substring** — plain text match anywhere in the line
    - **regex** — Python regular expression
    - **level** — pick `err`/`wrn`/`inf`/`dbg` from the dropdown; matches the Zephyr tag *or* the equivalent keyword (`warning`, `fatal`, …), so it works on syslog and unstructured logs too
    - **module** — prefix-matches the module field (e.g. `bt_hci` matches `bt_hci_core`)
 4. Choose **include** or **exclude** per rule, and toggle **AND/OR** to control how include rules combine
-5. Click **Disconnect** or close the window to end the session
+5. Press **Ctrl+M** (or click **⚑ Mark**) to note an external event — it is written to the log as `>>>MARK - 2026-08-01T14:23:45Z: disconnecting external power` and shown in its own colour
+6. Click **Disconnect** or close the window to end the session
 
 To monitor multiple serial ports simultaneously, click **New Window** in the toolbar to open an additional independent connection window.
 
