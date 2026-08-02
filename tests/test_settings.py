@@ -3,6 +3,9 @@
 
 import pytest
 
+from app import theme
+from app.settings import AppSettings
+
 
 class TestBufferCap:
     def test_default(self, settings):
@@ -186,3 +189,141 @@ class TestAnsiMode:
     def test_falls_back_when_the_store_holds_junk(self, settings):
         settings._qs.setValue("display/ansi_mode", "technicolor")
         assert settings.ansi_mode() == "strip"
+
+
+class TestPerThemeLogColors:
+    """Log colors are stored per theme — a dark choice must not follow you."""
+
+    def test_defaults_come_from_the_active_theme(self, settings):
+        settings.set_theme("dracula")
+        assert settings.level_color("err") == "#ff5555"
+        settings.set_theme("vscode-light")
+        assert settings.level_color("err") == theme.log_default(
+            "vscode-light", "level_err"
+        )
+
+    def test_an_override_is_scoped_to_its_theme(self, settings):
+        settings.set_theme("dracula")
+        settings.set_level_color("err", "#123456")
+        settings.set_theme("solarized-light")
+        assert settings.level_color("err") != "#123456"
+        settings.set_theme("dracula")
+        assert settings.level_color("err") == "#123456"
+
+    @pytest.mark.parametrize(
+        "getter, setter",
+        [
+            ("tx_color", "set_tx_color"),
+            ("mark_color", "set_mark_color"),
+        ],
+    )
+    def test_tx_and_mark_are_per_theme_too(self, settings, getter, setter):
+        settings.set_theme("dracula")
+        getattr(settings, setter)("#abcdef")
+        settings.set_theme("vscode-light")
+        assert getattr(settings, getter)() != "#abcdef"
+
+    def test_syntax_colors_are_per_theme(self, settings):
+        settings.set_theme("dracula")
+        settings.set_syntax_color("message", "#111111")
+        settings.set_theme("vscode-light")
+        assert settings.syntax_color("message") == theme.log_default(
+            "vscode-light", "syntax_message"
+        )
+
+    def test_system_theme_uses_the_resolved_palette(self, settings, monkeypatch):
+        """Following the OS into light mode must bring the light colors."""
+        settings.set_theme(theme.SYSTEM)
+        settings.set_system_dark_theme("dracula")
+        settings.set_system_light_theme("vscode-light")
+
+        monkeypatch.setattr(theme, "system_is_dark", lambda: True)
+        assert settings.level_color("err") == theme.log_default(
+            "dracula", "level_err"
+        )
+        monkeypatch.setattr(theme, "system_is_dark", lambda: False)
+        assert settings.level_color("err") == theme.log_default(
+            "vscode-light", "level_err"
+        )
+
+
+class TestSystemThemePair:
+    def test_defaults(self, settings):
+        assert settings.system_dark_theme() == "dracula"
+        assert settings.system_light_theme() == "vscode-light"
+
+    def test_roundtrip(self, settings):
+        settings.set_system_dark_theme("vscode")
+        settings.set_system_light_theme("solarized-light")
+        assert settings.system_dark_theme() == "vscode"
+        assert settings.system_light_theme() == "solarized-light"
+
+    def test_a_light_theme_is_rejected_as_the_dark_partner(self, settings):
+        settings.set_system_dark_theme("vscode-light")
+        assert settings.system_dark_theme() == "dracula"
+
+    def test_a_dark_theme_is_rejected_as_the_light_partner(self, settings):
+        settings.set_system_light_theme("dracula")
+        assert settings.system_light_theme() == "vscode-light"
+
+    def test_system_is_a_valid_theme_choice(self, settings):
+        settings.set_theme(theme.SYSTEM)
+        assert settings.theme() == theme.SYSTEM
+
+    def test_every_concrete_theme_is_accepted(self, settings):
+        for name in theme.theme_names():
+            settings.set_theme(name)
+            assert settings.theme() == name
+
+
+class TestLogColorMigration:
+    """Colors customized before the per-theme split must not be lost."""
+
+    def test_old_keys_move_into_the_active_theme(self, settings_store, clear_settings):
+        clear_settings()
+        settings_store.setValue("app/theme", "vscode")
+        settings_store.setValue("color/level_err", "#abcdef")
+        settings_store.setValue("color/tx", "#fedcba")
+        settings_store.sync()
+
+        s = AppSettings()
+        assert s.level_color("err") == "#abcdef"
+        assert s.tx_color() == "#fedcba"
+
+    def test_migrated_keys_are_removed(self, settings_store, clear_settings):
+        clear_settings()
+        settings_store.setValue("color/level_err", "#abcdef")
+        settings_store.sync()
+        AppSettings()
+        settings_store.sync()
+        assert not settings_store.value("color/level_err", "")
+
+    def test_other_themes_keep_their_own_defaults(
+        self, settings_store, clear_settings
+    ):
+        """The old value was chosen against one background, not all of them."""
+        clear_settings()
+        settings_store.setValue("app/theme", "dracula")
+        settings_store.setValue("color/level_err", "#abcdef")
+        settings_store.sync()
+
+        s = AppSettings()
+        s.set_theme("vscode-light")
+        assert s.level_color("err") == theme.log_default("vscode-light", "level_err")
+
+    def test_migration_runs_once(self, settings_store, clear_settings):
+        """A later customization must not be clobbered by a re-run."""
+        clear_settings()
+        settings_store.setValue("color/level_err", "#abcdef")
+        settings_store.sync()
+        AppSettings()
+
+        s = AppSettings()
+        s.set_level_color("err", "#999999")
+        AppSettings()  # a third window opening must not undo that
+        assert AppSettings().level_color("err") == "#999999"
+
+    def test_untouched_settings_migrate_cleanly(self, settings, clear_settings):
+        clear_settings()
+        s = AppSettings()
+        assert s.level_color("err") == theme.log_default("dracula", "level_err")

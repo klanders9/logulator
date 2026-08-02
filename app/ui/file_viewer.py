@@ -56,6 +56,7 @@ class FileViewer(LogWindowMixin, QMainWindow):
         self._watcher.fileChanged.connect(self._on_file_changed)
 
         self._settings_dialog: Optional[QDialog] = None
+        self._sidebar = None  # built lazily with the settings dialog
         FileViewer._instances.append(self)
 
         self.setWindowTitle(path.name)
@@ -380,12 +381,15 @@ class FileViewer(LogWindowMixin, QMainWindow):
             dlg.resize(300, 520)
             layout = QVBoxLayout(dlg)
             layout.setContentsMargins(0, 0, 0, 0)
+            # Held on the window (not just the dialog) so the shared theme
+            # broadcast can find it and repaint its per-theme colour swatches.
             sidebar = SettingsSidebar(self._settings)
             sidebar.settings_changed.connect(self._on_settings_changed)
             sidebar.theme_changed.connect(self._on_theme_changed)
             sidebar.font_size_changed.connect(self._on_font_size_changed)
             sidebar.buffer_cap_changed.connect(lambda _: None)
             layout.addWidget(sidebar)
+            self._sidebar = sidebar
             self._settings_dialog = dlg
         self._settings_dialog.show()
         self._settings_dialog.raise_()

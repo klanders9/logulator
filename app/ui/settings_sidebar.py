@@ -21,13 +21,25 @@ from PySide6.QtWidgets import (
 )
 
 from app.settings import AppSettings
-from app.theme import active_colors
+from app.theme import SYSTEM, active_colors
 
 _APPLY_LABELS = ["All panes", "Raw log only", "Filtered log only", "None"]
 _APPLY_VALUES = ["all", "raw", "filtered", "none"]
 
-_THEME_LABELS = ["Dracula", "VS Code Dark"]
-_THEME_VALUES = ["dracula", "vscode"]
+_THEME_LABELS = [
+    "System", "Dracula", "VS Code Dark", "VS Code Light", "Solarized Light",
+]
+_THEME_VALUES = [
+    SYSTEM, "dracula", "vscode", "vscode-light", "solarized-light",
+]
+
+# The pair "System" chooses between. Split so each list only offers themes of
+# the right polarity — picking a dark theme as the light partner is never what
+# anyone means.
+_DARK_LABELS = ["Dracula", "VS Code Dark"]
+_DARK_VALUES = ["dracula", "vscode"]
+_LIGHT_LABELS = ["VS Code Light", "Solarized Light"]
+_LIGHT_VALUES = ["vscode-light", "solarized-light"]
 
 _MINIMAP_APPLY_LABELS = ["Both panes", "Raw only", "Filtered only"]
 _MINIMAP_APPLY_VALUES = ["all", "raw", "filtered"]
@@ -39,6 +51,13 @@ _ANSI_VALUES = ["strip", "render", "off"]
 _FONT_SIZES = ["8", "9", "10", "11", "12", "13", "14", "16", "18", "20", "24"]
 
 
+def _paint_swatch(swatch: QLabel, hex_color: str) -> None:
+    swatch.setStyleSheet(
+        f"background-color: {hex_color}; "
+        f"border: 1px solid {active_colors()['border']};"
+    )
+
+
 class SettingsSidebar(QWidget):
     settings_changed = Signal()
     buffer_cap_changed = Signal(int)
@@ -48,6 +67,7 @@ class SettingsSidebar(QWidget):
     def __init__(self, settings: AppSettings, parent=None):
         super().__init__(parent)
         self._s = settings
+        self._swatches = []
         self.setFixedWidth(280)
 
         content = QWidget()
@@ -69,6 +89,22 @@ class SettingsSidebar(QWidget):
         )
         theme_row.addWidget(self._theme_combo, stretch=1)
         layout.addLayout(theme_row)
+
+        # Only meaningful under "System", so shown only then.
+        self._system_pair = QWidget()
+        pair_layout = QVBoxLayout(self._system_pair)
+        pair_layout.setContentsMargins(12, 0, 0, 0)
+        pair_layout.setSpacing(2)
+        self._dark_combo = self._pair_combo(
+            pair_layout, "When dark:", _DARK_LABELS, _DARK_VALUES,
+            settings.system_dark_theme(), self._s.set_system_dark_theme,
+        )
+        self._light_combo = self._pair_combo(
+            pair_layout, "When light:", _LIGHT_LABELS, _LIGHT_VALUES,
+            settings.system_light_theme(), self._s.set_system_light_theme,
+        )
+        layout.addWidget(self._system_pair)
+        self._system_pair.setVisible(cur_theme == SYSTEM)
 
         font_row = QHBoxLayout()
         font_row.addWidget(QLabel("Font size:"), stretch=1)
@@ -274,7 +310,10 @@ class SettingsSidebar(QWidget):
 
         swatch = QLabel()
         swatch.setFixedSize(20, 20)
-        swatch.setStyleSheet(f"background-color: {getter()}; border: 1px solid {active_colors()['border']};")
+        _paint_swatch(swatch, getter())
+        # Tracked so a theme switch can repaint them: log colors are stored
+        # per theme, so every swatch here shows a different value afterwards.
+        self._swatches.append((swatch, getter))
         row.addWidget(swatch)
 
         pick_btn = QPushButton("…")
@@ -283,18 +322,48 @@ class SettingsSidebar(QWidget):
         def pick(checked=False, _getter=getter, _setter=setter, _swatch=swatch, _label=label):
             color = QColorDialog.getColor(QColor(_getter()), self, f"Color: {_label}")
             if color.isValid():
-                hex_color = color.name()
-                _setter(hex_color)
-                _swatch.setStyleSheet(f"background-color: {hex_color}; border: 1px solid {active_colors()['border']};")
+                _setter(color.name())
+                _paint_swatch(_swatch, color.name())
                 self.settings_changed.emit()
 
         pick_btn.clicked.connect(pick)
         row.addWidget(pick_btn)
         return row
 
+    def refresh_colors(self) -> None:
+        """Repaint the colour swatches after a theme switch.
+
+        Log colours are stored per theme, so every getter here returns a
+        different value once the theme changes; without this the pickers would
+        keep advertising the previous theme's palette.
+        """
+        for swatch, getter in self._swatches:
+            _paint_swatch(swatch, getter())
+
+    def _pair_combo(self, layout, label, labels, values, current, setter):
+        """One row of the System dark/light partner selector."""
+        row = QHBoxLayout()
+        row.addWidget(QLabel(label))
+        combo = QComboBox()
+        combo.addItems(labels)
+        combo.setCurrentIndex(values.index(current) if current in values else 0)
+
+        def changed(i, _setter=setter, _values=values):
+            _setter(_values[i])
+            # Only half the pair is in use at a time; re-resolving picks up a
+            # change to the half that is.
+            self.theme_changed.emit(self._s.resolved_theme())
+
+        combo.currentIndexChanged.connect(changed)
+        row.addWidget(combo, stretch=1)
+        layout.addLayout(row)
+        return combo
+
     def _on_theme_changed(self, theme: str) -> None:
         self._s.set_theme(theme)
-        self.theme_changed.emit(theme)
+        self._system_pair.setVisible(theme == SYSTEM)
+        # Windows need a palette name, not the SYSTEM sentinel.
+        self.theme_changed.emit(self._s.resolved_theme())
 
     def _on_enable_toggled(self, checked: bool) -> None:
         self._s.set_color_enabled(checked)

@@ -27,7 +27,7 @@ from app import ansi, filter_engine
 from app.colorizer import Colorizer
 from app.log_format import MARK_PREFIX, TX_PREFIX, detect_level
 from app.settings import AppSettings
-from app.theme import active_colors, apply_palette
+from app.theme import active_colors, active_theme, apply_palette, palette_applied
 from app.ui.filter_bar import FilterBar
 from app.ui.log_pane import (
     _fmt,
@@ -56,6 +56,25 @@ _open_windows: List["LogWindowMixin"] = []
 def open_log_windows() -> List["LogWindowMixin"]:
     """Live log windows, in creation order."""
     return list(_open_windows)
+
+
+def retheme_all_windows(theme: str) -> None:
+    """Switch the application to a concrete theme and restyle every window.
+
+    The palette is application-wide, but the log-pane chrome, minimap bands
+    and plain-line colour come from theme.active_colors() and are baked into
+    stylesheets and text formats when a line is drawn, so each window has to
+    be restyled and rebuilt for the switch to take.
+
+    Also the entry point for the OS switching light/dark under the "System"
+    theme, which is why it no-ops when the resolved theme has not actually
+    changed — otherwise every pane would be rebuilt for nothing.
+    """
+    if palette_applied() and theme == active_theme():
+        return
+    apply_palette(QApplication.instance(), theme)
+    for window in open_log_windows():
+        window._apply_theme()
 
 
 def iter_blocks(doc):
@@ -532,13 +551,7 @@ class LogWindowMixin:
         self._apply_minimap_settings()
 
     def _on_theme_changed(self, theme: str) -> None:
-        # The palette is application-wide, but the log-pane chrome, minimap
-        # bands and plain-line colour come from theme.active_colors() and are
-        # baked into stylesheets and text formats, so every window has to be
-        # restyled and rebuilt for the switch to take.
-        apply_palette(QApplication.instance(), theme)
-        for window in open_log_windows():
-            window._apply_theme()
+        retheme_all_windows(theme)
 
     def _apply_theme(self) -> None:
         self._plain_fmt = _fmt(_plain_color())
@@ -552,6 +565,11 @@ class LogWindowMixin:
         find_bar = getattr(self, "_find_bar", None)
         if find_bar is not None:
             find_bar.restyle()
+        # Log colours are per theme, so the sidebar's swatches now show the
+        # wrong palette. FileViewer's sidebar is None until first opened.
+        sidebar = getattr(self, "_sidebar", None)
+        if sidebar is not None:
+            sidebar.refresh_colors()
         self._apply_display_settings()
 
     def _on_font_size_changed(self, size: int) -> None:
