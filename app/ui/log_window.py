@@ -565,11 +565,11 @@ class LogWindowMixin:
         find_bar = getattr(self, "_find_bar", None)
         if find_bar is not None:
             find_bar.restyle()
-        # Log colours are per theme, so the sidebar's swatches now show the
-        # wrong palette. FileViewer's sidebar is None until first opened.
+        # The sidebar's swatches and section headings are both baked in at
+        # build time. FileViewer's sidebar is None until first opened.
         sidebar = getattr(self, "_sidebar", None)
         if sidebar is not None:
-            sidebar.refresh_colors()
+            sidebar.restyle()
         self._apply_display_settings()
 
     def _on_font_size_changed(self, size: int) -> None:

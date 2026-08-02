@@ -5,7 +5,16 @@ import pytest
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QLabel
 
+from app import theme
 from app.ui.settings_sidebar import SettingsSidebar
+
+
+@pytest.fixture(autouse=True)
+def _restore_theme(qapp):
+    """Theme state is process-global; put it back after each test."""
+    before = theme.active_theme()
+    yield
+    theme.apply_palette(qapp, before)
 
 
 @pytest.fixture
@@ -214,7 +223,7 @@ class TestSwatchRefresh:
         before = sidebar._swatches[0][1]()
         settings.set_theme("solarized-light")
         theme.apply_palette(qapp, "solarized-light")
-        sidebar.refresh_colors()
+        sidebar.restyle()
         after = sidebar._swatches[0][1]()
         assert before != after
         assert after in sidebar._swatches[0][0].styleSheet()
@@ -222,3 +231,40 @@ class TestSwatchRefresh:
     def test_every_color_row_is_tracked(self, sidebar):
         # 4 levels + 3 syntax fields + TX + mark
         assert len(sidebar._swatches) == 9
+
+
+class TestHeadingRestyle:
+    """Headings bake their colour into a stylesheet, so a switch must reach it."""
+
+    def _heading(self, sidebar, text):
+        for label, _section in sidebar._headings:
+            if label.text() == text:
+                return label
+        raise AssertionError(f"no heading {text!r}")
+
+    def test_sections_and_subsections_share_a_colour(self, sidebar):
+        section = self._heading(sidebar, "Appearance").styleSheet()
+        subsection = self._heading(sidebar, "Level colors").styleSheet()
+        colour = theme.active_colors()["header_text"]
+        assert f"color: {colour}" in section
+        assert f"color: {colour}" in subsection
+
+    def test_headings_follow_a_theme_switch(self, sidebar, qapp):
+        """The reported glitch: subsections kept the start-up theme's grey."""
+        theme.apply_palette(qapp, "solarized-light")
+        sidebar.restyle()
+        colour = theme.colors("solarized-light")["header_text"]
+        for text in ("Appearance", "Display", "Level colors", "Marks"):
+            assert f"color: {colour}" in self._heading(sidebar, text).styleSheet(), (
+                f"{text} kept a stale colour"
+            )
+
+    def test_section_rule_follows_the_theme(self, sidebar, qapp):
+        theme.apply_palette(qapp, "vscode-light")
+        sidebar.restyle()
+        border = theme.colors("vscode-light")["border"]
+        assert f"1px solid {border}" in self._heading(sidebar, "Display").styleSheet()
+
+    def test_both_heading_levels_are_tracked(self, sidebar):
+        kinds = {section for _lbl, section in sidebar._headings}
+        assert kinds == {True, False}

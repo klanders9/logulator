@@ -58,6 +58,30 @@ def _paint_swatch(swatch: QLabel, hex_color: str) -> None:
     )
 
 
+def _paint_label(label: QLabel, section: bool) -> None:
+    """Style a section or subsection heading from the active theme.
+
+    Both use `header_text`. Previously only the subsections named a colour and
+    the sections inherited the palette's window text, so the two disagreed —
+    and, because the colour is baked into the stylesheet when the sidebar is
+    built, the subsections then kept the *start-up* theme's grey through every
+    later switch while the sections tracked the palette live. Hierarchy comes
+    from the size and the rule beneath, not from a second colour.
+    """
+    colors = active_colors()
+    if section:
+        label.setStyleSheet(
+            "font-weight: bold; font-size: 13px; color: %s;"
+            "padding-bottom: 2px; border-bottom: 1px solid %s;"
+            % (colors["header_text"], colors["border"])
+        )
+    else:
+        label.setStyleSheet(
+            "font-weight: bold; color: %s; margin-top: 6px;"
+            % colors["header_text"]
+        )
+
+
 class SettingsSidebar(QWidget):
     settings_changed = Signal()
     buffer_cap_changed = Signal(int)
@@ -68,6 +92,7 @@ class SettingsSidebar(QWidget):
         super().__init__(parent)
         self._s = settings
         self._swatches = []
+        self._headings = []
         self.setFixedWidth(280)
 
         content = QWidget()
@@ -282,20 +307,17 @@ class SettingsSidebar(QWidget):
         outer.addWidget(scroll)
 
     def _section_label(self, text: str) -> QLabel:
-        lbl = QLabel(text)
-        lbl.setStyleSheet(
-            "font-weight: bold; font-size: 13px;"
-            "padding-bottom: 2px; border-bottom: 1px solid %s;"
-            % active_colors()["border"]
-        )
-        return lbl
+        return self._heading(text, section=True)
 
     def _subsection_label(self, text: str) -> QLabel:
+        return self._heading(text, section=False)
+
+    def _heading(self, text: str, section: bool) -> QLabel:
         lbl = QLabel(text)
-        lbl.setStyleSheet(
-            "font-weight: bold; color: %s; margin-top: 6px;"
-            % active_colors()["header_text"]
-        )
+        _paint_label(lbl, section)
+        # Tracked so restyle() can repaint them: the colour is baked into the
+        # stylesheet here, and a theme switch has to reach it.
+        self._headings.append((lbl, section))
         return lbl
 
     def _color_row(
@@ -330,15 +352,18 @@ class SettingsSidebar(QWidget):
         row.addWidget(pick_btn)
         return row
 
-    def refresh_colors(self) -> None:
-        """Repaint the colour swatches after a theme switch.
+    def restyle(self) -> None:
+        """Re-apply theme-derived styling after a theme switch.
 
-        Log colours are stored per theme, so every getter here returns a
-        different value once the theme changes; without this the pickers would
-        keep advertising the previous theme's palette.
+        Two things are baked in at build time and cannot follow the palette on
+        their own: the colour swatches (log colours are stored per theme, so
+        every getter returns a different value afterwards) and the section
+        headings (their colour and rule are written into a stylesheet).
         """
         for swatch, getter in self._swatches:
             _paint_swatch(swatch, getter())
+        for label, section in self._headings:
+            _paint_label(label, section)
 
     def _pair_combo(self, layout, label, labels, values, current, setter):
         """One row of the System dark/light partner selector."""

@@ -650,9 +650,13 @@ Fixed-width (280 px) collapsible panel shown on the right side of
   indented sub-combos ("When dark:" / "When light:") selecting the partner
   pair; each list only offers themes of the right polarity. Change takes
   effect immediately via `apply_palette` — no restart needed.
-  `refresh_colors()` repaints the colour swatches after a theme switch, since
-  log colours are stored per theme and every picker then shows a different
-  value; `LogWindowMixin._apply_theme` calls it.
+  `restyle()` re-applies everything baked into a stylesheet at build time —
+  the colour swatches (log colours are per theme, so every picker shows a
+  different value afterwards) and the section/subsection headings;
+  `LogWindowMixin._apply_theme` calls it. Both heading levels use
+  `header_text`, taking their hierarchy from size and the section rule rather
+  than a second colour: when only the subsections named a colour, the two
+  disagreed *and* the subsections kept the start-up theme's grey forever.
   Also a font size dropdown (8–24 pt, persisted via `AppSettings.font_size`,
   default 12) emitting `font_size_changed(int)` — both `MainWindow` and
   `FileViewer` (via its settings dialog) connect it to resize pane fonts live.
