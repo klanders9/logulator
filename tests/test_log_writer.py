@@ -1,9 +1,12 @@
 # Copyright (c) 2026 Kevin Landers. SPDX-License-Identifier: MIT
 """Tests for LogWriter session handling."""
 
+import re
+from datetime import datetime
+
 import pytest
 
-from app.log_writer import LogWriter
+from app.log_writer import LogWriter, sanitize_prefix
 
 
 @pytest.fixture
@@ -154,6 +157,92 @@ class TestLogDirectory:
             blocked.chmod(0o700)
 
 
+class TestFilenamePrefix:
+    _STAMP = re.compile(r"\d{8}_\d{6}")
+
+    def test_default_matches_the_historical_name(self, writer):
+        writer.open_session()
+        assert writer.current_path.name.startswith("session_")
+
+    def test_custom_prefix_is_used(self, tmp_path):
+        w = LogWriter(str(tmp_path / "logs"), prefix="featureA_")
+        w.open_session()
+        try:
+            assert w.current_path.name.startswith("featureA_")
+            assert self._STAMP.search(w.current_path.name)
+        finally:
+            w.close()
+
+    def test_set_prefix_applies_to_the_next_session(self, writer):
+        writer.open_session()
+        writer.close()
+        writer.set_prefix("ulcplus_")
+        writer.open_session()
+        assert writer.current_path.name.startswith("ulcplus_")
+
+    def test_empty_prefix_leaves_a_bare_timestamp(self, tmp_path):
+        """A nameless file is impossible — the timestamp is always appended."""
+        w = LogWriter(str(tmp_path / "logs"), prefix="")
+        w.open_session()
+        try:
+            assert self._STAMP.fullmatch(w.current_path.stem)
+        finally:
+            w.close()
+
+    def test_collision_suffix_still_applies(self, tmp_path, monkeypatch):
+        """Two sessions in one second must not share a file, prefix or not."""
+        import app.log_writer as lw
+
+        fixed = datetime(2026, 8, 1, 14, 30, 12)
+
+        class _Frozen(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed
+
+        monkeypatch.setattr(lw, "datetime", _Frozen)
+        w = LogWriter(str(tmp_path / "logs"), prefix="run-")
+        try:
+            w.open_session()
+            first = w.current_path
+            w.open_session()
+            assert first.name == "run-20260801_143012.log"
+            assert w.current_path.name == "run-20260801_143012_2.log"
+        finally:
+            w.close()
+
+
+class TestPrefixSanitizing:
+    """The settings file is hand-editable, so the prefix cannot be trusted."""
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("featureA_", "featureA_"),
+            ("../../escape_", "....escape_"),
+            ("a/b\\c_", "abc_"),
+            ('bad<>:"|?*chars_', "badchars_"),
+            ("  padded  ", "padded"),
+            ("nul\x00byte_", "nulbyte_"),
+        ],
+    )
+    def test_sanitize(self, raw, expected):
+        assert sanitize_prefix(raw) == expected
+
+    def test_length_is_capped(self):
+        assert len(sanitize_prefix("x" * 500)) == 64
+
+    def test_a_separator_prefix_cannot_redirect_the_write(self, tmp_path):
+        """Whatever is typed, the log lands in the configured directory."""
+        target = tmp_path / "logs"
+        w = LogWriter(str(target), prefix="../../../etc/passwd_")
+        w.open_session()
+        try:
+            assert w.current_path.parent == target
+        finally:
+            w.close()
+
+
 class TestTransmitRecords:
     def test_tx_line_gets_the_marker(self, writer):
         writer.open_session()
@@ -208,6 +297,47 @@ class TestTransmitRecords:
         writer.open_session()
         writer.write_tx_line("fresh")
         assert writer.current_path.read_bytes() == b">> fresh\n"
+
+
+class TestMarkRecords:
+    """Marks use the same record path as TX: never spliced into an RX line."""
+
+    MARK = ">>>MARK - 2026-08-01T14:23:45Z: power cycled"
+
+    def test_record_is_written_verbatim(self, writer, tmp_path):
+        writer.open_session()
+        writer.write_record(self.MARK)
+        writer.close()
+        assert _read_only_log(tmp_path) == self.MARK + "\n"
+
+    def test_record_starts_a_fresh_line_when_mid_line(self, writer, tmp_path):
+        writer.open_session()
+        writer.write(b"partial received line")
+        writer.write_record(self.MARK)
+        writer.close()
+        assert _read_only_log(tmp_path) == (
+            "partial received line\n" + self.MARK + "\n"
+        )
+
+    def test_received_bytes_after_a_mark_are_untouched(self, writer, tmp_path):
+        """The extension may add a newline of its own; RX stays verbatim."""
+        writer.open_session()
+        writer.write(b"abc")
+        writer.write_record(self.MARK)
+        writer.write(b"def\n")
+        writer.close()
+        text = _read_only_log(tmp_path)
+        assert text.endswith("def\n")
+        assert "abc" in text and "def" in text
+
+    def test_record_on_a_closed_writer_is_a_no_op(self, writer):
+        writer.write_record(self.MARK)  # must not raise
+
+
+def _read_only_log(tmp_path) -> str:
+    logs = sorted((tmp_path / "logs").glob("*.log"))
+    assert len(logs) == 1
+    return logs[0].read_text()
 
 
 class TestThreadSafety:

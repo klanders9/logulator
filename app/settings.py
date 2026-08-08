@@ -7,24 +7,19 @@ from typing import Optional
 
 from PySide6.QtCore import QByteArray, QSettings
 
+# LogWriter owns the naming scheme and imports nothing from here, so taking
+# the default from it keeps one definition rather than two that can drift.
+from app.log_writer import DEFAULT_PREFIX as _LOG_PREFIX_DEFAULT
+# Likewise app.theme owns the palettes and their starting log colors, and
+# knows nothing about settings — the dependency only runs this way.
+from app.theme import SYSTEM, is_dark, log_default, resolve_theme, theme_names
+
 
 class AppSettings:
     _ORG = "logulator"
     _APP = "logulator"
 
-    _LEVEL_DEFAULTS = {
-        "err": "#ff5555",
-        "wrn": "#ffb86c",
-        "inf": "#50fa7b",
-        "dbg": "#888888",
-    }
-    _SYNTAX_DEFAULTS = {
-        "timestamp": "#666666",
-        "module": "#bd93f9",
-        "message": "#f8f8f2",
-    }
-
-    _TX_DEFAULT = "#8be9fd"
+    # Log-colour defaults live in app.theme, per theme — see _log_color().
 
     _BUFFER_DEFAULT = 100_000
     _BUFFER_MIN = 1_000
@@ -32,6 +27,7 @@ class AppSettings:
 
     def __init__(self):
         self._qs = QSettings(self._ORG, self._APP)
+        self._migrate_log_colors()
 
     # --- Window geometry ---
 
@@ -98,21 +94,29 @@ class AppSettings:
         if val in ("all", "raw", "filtered", "none"):
             self._qs.setValue("color/apply_to", val)
 
+    # Log colors are stored per theme. A colour chosen against a dark pane is
+    # meaningless on a light one — #f8f8f2 message text on white is invisible —
+    # so each theme keeps its own overrides on top of its own defaults.
+
+    def _log_color(self, key: str) -> str:
+        theme = self.resolved_theme()
+        v = self._qs.value(f"color/{theme}/{key}", "")
+        return v if isinstance(v, str) and v else log_default(theme, key)
+
+    def _set_log_color(self, key: str, color: str) -> None:
+        self._qs.setValue(f"color/{self.resolved_theme()}/{key}", color)
+
     def level_color(self, level: str) -> str:
-        return self._qs.value(
-            f"color/level_{level}", self._LEVEL_DEFAULTS.get(level, "#cccccc")
-        )
+        return self._log_color(f"level_{level}")
 
     def set_level_color(self, level: str, color: str) -> None:
-        self._qs.setValue(f"color/level_{level}", color)
+        self._set_log_color(f"level_{level}", color)
 
     def syntax_color(self, field: str) -> str:
-        return self._qs.value(
-            f"color/syntax_{field}", self._SYNTAX_DEFAULTS.get(field, "#cccccc")
-        )
+        return self._log_color(f"syntax_{field}")
 
     def set_syntax_color(self, field: str, color: str) -> None:
-        self._qs.setValue(f"color/syntax_{field}", color)
+        self._set_log_color(f"syntax_{field}", color)
 
     # --- Escape sequences ---
 
@@ -179,6 +183,19 @@ class AppSettings:
     def set_log_dir(self, val: str) -> None:
         """Set the session log directory. An empty value restores the default."""
         self._qs.setValue("logging/dir", str(val))
+
+    def log_prefix(self) -> str:
+        """Filename prefix for session logs, e.g. 'session_' → session_….log.
+
+        Unlike log_dir, an empty value is meaningful and kept: the timestamp
+        alone is a valid name. LogWriter sanitizes whatever lands here before
+        using it, since this file is hand-editable.
+        """
+        v = self._qs.value("logging/prefix", _LOG_PREFIX_DEFAULT)
+        return v if isinstance(v, str) else _LOG_PREFIX_DEFAULT
+
+    def set_log_prefix(self, val: str) -> None:
+        self._qs.setValue("logging/prefix", str(val))
 
     # Filter rules are deliberately not persisted — they are per-session view
     # state in both windows, so there is no filter_* accessor here.
@@ -299,10 +316,18 @@ class AppSettings:
         self._qs.setValue("tx/echo_empty", val)
 
     def tx_color(self) -> str:
-        return self._qs.value("color/tx", self._TX_DEFAULT)
+        return self._log_color("tx")
 
     def set_tx_color(self, color: str) -> None:
-        self._qs.setValue("color/tx", color)
+        self._set_log_color("tx", color)
+
+    # --- Marks ---
+
+    def mark_color(self) -> str:
+        return self._log_color("mark")
+
+    def set_mark_color(self, color: str) -> None:
+        self._set_log_color("mark", color)
 
     # --- Font ---
 
@@ -319,9 +344,64 @@ class AppSettings:
     # --- Theme ---
 
     def theme(self) -> str:
+        """The stored choice, which may be SYSTEM rather than a palette name."""
         v = self._qs.value("app/theme", "dracula")
-        return v if v in ("dracula", "vscode") else "dracula"
+        return v if v in theme_names() or v == SYSTEM else "dracula"
 
     def set_theme(self, val: str) -> None:
-        if val in ("dracula", "vscode"):
+        if val in theme_names() or val == SYSTEM:
             self._qs.setValue("app/theme", val)
+
+    def resolved_theme(self) -> str:
+        """The palette to actually apply — SYSTEM mapped through the OS.
+
+        Everything that needs a concrete theme goes through here, including
+        the per-theme log-colour namespace: following the OS from dark to
+        light has to bring the light colours with it.
+        """
+        return resolve_theme(
+            self.theme(), self.system_dark_theme(), self.system_light_theme()
+        )
+
+    def system_dark_theme(self) -> str:
+        v = self._qs.value("app/system_dark", "dracula")
+        return v if v in theme_names() and is_dark(v) else "dracula"
+
+    def set_system_dark_theme(self, val: str) -> None:
+        if val in theme_names() and is_dark(val):
+            self._qs.setValue("app/system_dark", val)
+
+    def system_light_theme(self) -> str:
+        v = self._qs.value("app/system_light", "vscode-light")
+        return v if v in theme_names() and not is_dark(v) else "vscode-light"
+
+    def set_system_light_theme(self, val: str) -> None:
+        if val in theme_names() and not is_dark(val):
+            self._qs.setValue("app/system_light", val)
+
+    # --- Migration ---
+
+    # Log colors used to be stored theme-agnostically under color/<key>. Move
+    # any the user had customized into whichever theme was active when they
+    # chose them, so adding light themes does not silently discard them.
+    _OLD_COLOR_KEYS = {
+        "color/level_err": "level_err",
+        "color/level_wrn": "level_wrn",
+        "color/level_inf": "level_inf",
+        "color/level_dbg": "level_dbg",
+        "color/syntax_timestamp": "syntax_timestamp",
+        "color/syntax_module": "syntax_module",
+        "color/syntax_message": "syntax_message",
+        "color/tx": "tx",
+    }
+
+    def _migrate_log_colors(self) -> None:
+        if self._qs.value("color/per_theme_migrated", False, type=bool):
+            return
+        theme = self.resolved_theme()
+        for old_key, new_key in self._OLD_COLOR_KEYS.items():
+            v = self._qs.value(old_key, "")
+            if isinstance(v, str) and v:
+                self._qs.setValue(f"color/{theme}/{new_key}", v)
+                self._qs.remove(old_key)
+        self._qs.setValue("color/per_theme_migrated", True)

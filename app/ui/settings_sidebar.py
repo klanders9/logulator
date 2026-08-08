@@ -21,13 +21,25 @@ from PySide6.QtWidgets import (
 )
 
 from app.settings import AppSettings
-from app.theme import active_colors
+from app.theme import SYSTEM, active_colors
 
 _APPLY_LABELS = ["All panes", "Raw log only", "Filtered log only", "None"]
 _APPLY_VALUES = ["all", "raw", "filtered", "none"]
 
-_THEME_LABELS = ["Dracula", "VS Code Dark"]
-_THEME_VALUES = ["dracula", "vscode"]
+_THEME_LABELS = [
+    "System", "Dracula", "VS Code Dark", "VS Code Light", "Solarized Light",
+]
+_THEME_VALUES = [
+    SYSTEM, "dracula", "vscode", "vscode-light", "solarized-light",
+]
+
+# The pair "System" chooses between. Split so each list only offers themes of
+# the right polarity — picking a dark theme as the light partner is never what
+# anyone means.
+_DARK_LABELS = ["Dracula", "VS Code Dark"]
+_DARK_VALUES = ["dracula", "vscode"]
+_LIGHT_LABELS = ["VS Code Light", "Solarized Light"]
+_LIGHT_VALUES = ["vscode-light", "solarized-light"]
 
 _MINIMAP_APPLY_LABELS = ["Both panes", "Raw only", "Filtered only"]
 _MINIMAP_APPLY_VALUES = ["all", "raw", "filtered"]
@@ -39,6 +51,37 @@ _ANSI_VALUES = ["strip", "render", "off"]
 _FONT_SIZES = ["8", "9", "10", "11", "12", "13", "14", "16", "18", "20", "24"]
 
 
+def _paint_swatch(swatch: QLabel, hex_color: str) -> None:
+    swatch.setStyleSheet(
+        f"background-color: {hex_color}; "
+        f"border: 1px solid {active_colors()['border']};"
+    )
+
+
+def _paint_label(label: QLabel, section: bool) -> None:
+    """Style a section or subsection heading from the active theme.
+
+    Both use `header_text`. Previously only the subsections named a colour and
+    the sections inherited the palette's window text, so the two disagreed —
+    and, because the colour is baked into the stylesheet when the sidebar is
+    built, the subsections then kept the *start-up* theme's grey through every
+    later switch while the sections tracked the palette live. Hierarchy comes
+    from the size and the rule beneath, not from a second colour.
+    """
+    colors = active_colors()
+    if section:
+        label.setStyleSheet(
+            "font-weight: bold; font-size: 13px; color: %s;"
+            "padding-bottom: 2px; border-bottom: 1px solid %s;"
+            % (colors["header_text"], colors["border"])
+        )
+    else:
+        label.setStyleSheet(
+            "font-weight: bold; color: %s; margin-top: 6px;"
+            % colors["header_text"]
+        )
+
+
 class SettingsSidebar(QWidget):
     settings_changed = Signal()
     buffer_cap_changed = Signal(int)
@@ -48,6 +91,8 @@ class SettingsSidebar(QWidget):
     def __init__(self, settings: AppSettings, parent=None):
         super().__init__(parent)
         self._s = settings
+        self._swatches = []
+        self._headings = []
         self.setFixedWidth(280)
 
         content = QWidget()
@@ -69,6 +114,22 @@ class SettingsSidebar(QWidget):
         )
         theme_row.addWidget(self._theme_combo, stretch=1)
         layout.addLayout(theme_row)
+
+        # Only meaningful under "System", so shown only then.
+        self._system_pair = QWidget()
+        pair_layout = QVBoxLayout(self._system_pair)
+        pair_layout.setContentsMargins(12, 0, 0, 0)
+        pair_layout.setSpacing(2)
+        self._dark_combo = self._pair_combo(
+            pair_layout, "When dark:", _DARK_LABELS, _DARK_VALUES,
+            settings.system_dark_theme(), self._s.set_system_dark_theme,
+        )
+        self._light_combo = self._pair_combo(
+            pair_layout, "When light:", _LIGHT_LABELS, _LIGHT_VALUES,
+            settings.system_light_theme(), self._s.set_system_light_theme,
+        )
+        layout.addWidget(self._system_pair)
+        self._system_pair.setVisible(cur_theme == SYSTEM)
 
         font_row = QHBoxLayout()
         font_row.addWidget(QLabel("Font size:"), stretch=1)
@@ -166,6 +227,13 @@ class SettingsSidebar(QWidget):
         self._echo_empty_cb.toggled.connect(self._s.set_tx_echo_empty)
         layout.addWidget(self._echo_empty_cb)
 
+        layout.addWidget(self._subsection_label("Marks"))
+        layout.addLayout(self._color_row(
+            "Mark lines (>>>MARK)",
+            lambda: self._s.mark_color(),
+            lambda c: self._s.set_mark_color(c),
+        ))
+
         layout.addWidget(self._subsection_label("Minimap"))
         self._minimap_cb = QCheckBox("Show minimap")
         self._minimap_cb.setChecked(settings.minimap_enabled())
@@ -239,20 +307,17 @@ class SettingsSidebar(QWidget):
         outer.addWidget(scroll)
 
     def _section_label(self, text: str) -> QLabel:
-        lbl = QLabel(text)
-        lbl.setStyleSheet(
-            "font-weight: bold; font-size: 13px;"
-            "padding-bottom: 2px; border-bottom: 1px solid %s;"
-            % active_colors()["border"]
-        )
-        return lbl
+        return self._heading(text, section=True)
 
     def _subsection_label(self, text: str) -> QLabel:
+        return self._heading(text, section=False)
+
+    def _heading(self, text: str, section: bool) -> QLabel:
         lbl = QLabel(text)
-        lbl.setStyleSheet(
-            "font-weight: bold; color: %s; margin-top: 6px;"
-            % active_colors()["header_text"]
-        )
+        _paint_label(lbl, section)
+        # Tracked so restyle() can repaint them: the colour is baked into the
+        # stylesheet here, and a theme switch has to reach it.
+        self._headings.append((lbl, section))
         return lbl
 
     def _color_row(
@@ -267,7 +332,10 @@ class SettingsSidebar(QWidget):
 
         swatch = QLabel()
         swatch.setFixedSize(20, 20)
-        swatch.setStyleSheet(f"background-color: {getter()}; border: 1px solid {active_colors()['border']};")
+        _paint_swatch(swatch, getter())
+        # Tracked so a theme switch can repaint them: log colors are stored
+        # per theme, so every swatch here shows a different value afterwards.
+        self._swatches.append((swatch, getter))
         row.addWidget(swatch)
 
         pick_btn = QPushButton("…")
@@ -276,18 +344,51 @@ class SettingsSidebar(QWidget):
         def pick(checked=False, _getter=getter, _setter=setter, _swatch=swatch, _label=label):
             color = QColorDialog.getColor(QColor(_getter()), self, f"Color: {_label}")
             if color.isValid():
-                hex_color = color.name()
-                _setter(hex_color)
-                _swatch.setStyleSheet(f"background-color: {hex_color}; border: 1px solid {active_colors()['border']};")
+                _setter(color.name())
+                _paint_swatch(_swatch, color.name())
                 self.settings_changed.emit()
 
         pick_btn.clicked.connect(pick)
         row.addWidget(pick_btn)
         return row
 
+    def restyle(self) -> None:
+        """Re-apply theme-derived styling after a theme switch.
+
+        Two things are baked in at build time and cannot follow the palette on
+        their own: the colour swatches (log colours are stored per theme, so
+        every getter returns a different value afterwards) and the section
+        headings (their colour and rule are written into a stylesheet).
+        """
+        for swatch, getter in self._swatches:
+            _paint_swatch(swatch, getter())
+        for label, section in self._headings:
+            _paint_label(label, section)
+
+    def _pair_combo(self, layout, label, labels, values, current, setter):
+        """One row of the System dark/light partner selector."""
+        row = QHBoxLayout()
+        row.addWidget(QLabel(label))
+        combo = QComboBox()
+        combo.addItems(labels)
+        combo.setCurrentIndex(values.index(current) if current in values else 0)
+
+        def changed(i, _setter=setter, _values=values):
+            _setter(_values[i])
+            # Only half the pair is in use at a time; re-resolving picks up a
+            # change to the half that is.
+            self.theme_changed.emit(self._s.resolved_theme())
+
+        combo.currentIndexChanged.connect(changed)
+        row.addWidget(combo, stretch=1)
+        layout.addLayout(row)
+        return combo
+
     def _on_theme_changed(self, theme: str) -> None:
         self._s.set_theme(theme)
-        self.theme_changed.emit(theme)
+        self._system_pair.setVisible(theme == SYSTEM)
+        # Windows need a palette name, not the SYSTEM sentinel.
+        self.theme_changed.emit(self._s.resolved_theme())
 
     def _on_enable_toggled(self, checked: bool) -> None:
         self._s.set_color_enabled(checked)

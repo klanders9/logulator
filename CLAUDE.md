@@ -11,12 +11,18 @@ Raw log collection and filtered display are strictly separated:
 - The UI applies filters purely as a view transform — the log file is never
   filtered, truncated, or modified by UI state
 - This is non-negotiable: do not blur this boundary
-- One deliberate extension (user-approved): sent (TX) lines are also recorded
-  in the session log, marked with a `>> ` prefix, so the file captures both
-  directions of the conversation. TX never modifies or filters RX bytes.
-  A TX record starts a fresh line when the file is mid-line, so the marker is
-  never spliced into a partially received RX line — the newline belongs to the
-  TX extension, and RX bytes are still written verbatim and in order.
+- Two deliberate extensions (both user-approved), which write **generated**
+  lines into the log alongside the received bytes:
+  - sent (TX) lines, marked `>> `, so the file captures both directions of
+    the conversation;
+  - user marks, `>>>MARK - <utc>: note`, noting events that happen outside
+    the log entirely (see `app/ui/mark_bar.py`).
+
+  Neither modifies or filters RX bytes. Both go through
+  `LogWriter.write_record`, which starts a fresh line when the file is
+  mid-line, so a marker is never spliced into a partially received RX line —
+  that newline belongs to the extension, and RX bytes are still written
+  verbatim and in order.
 
 ## Tech Stack
 - Python 3.9+ (matches `requires-python` in `pyproject.toml` and the .venv —
@@ -44,11 +50,14 @@ Optional[Path]` for the status bar to read file size. Path is cleared on
 `close()`.
 
 Written from two threads — the serial worker appends RX bytes, the GUI thread
-records TX lines — so a reentrant lock guards every file access. That also
-makes the open/closed check atomic against `close()`; previously a write
-racing a disconnect could raise `ValueError: write to closed file` inside the
-worker. `write_tx_line(text)` is the TX entry point and inserts a leading
-newline when mid-line; `write(data)` appends RX bytes verbatim.
+records TX lines and marks — so a reentrant lock guards every file access.
+That also makes the open/closed check atomic against `close()`; previously a
+write racing a disconnect could raise `ValueError: write to closed file`
+inside the worker. `write(data)` appends RX bytes verbatim.
+`write_record(line)` appends a complete generated line, inserting a leading
+newline when mid-line; `write_tx_line(text)` is the TX wrapper that adds the
+`>> ` marker, and `MainWindow._on_mark` passes an already-formatted mark
+straight to `write_record`.
 
 The destination comes from `AppSettings.log_dir()` (default `~/logs`), which
 `MainWindow._on_connect` pushes in via `set_log_dir()` before each session, so
@@ -56,6 +65,15 @@ a change in the sidebar applies to the next connect. Paths are `expanduser()`d.
 If `open_session()` raises `OSError` the connection is refused with a dialog —
 an unlogged session is worse than no session, since the log file is the source
 of truth.
+
+The filename is `<prefix>YYYYMMDD_HHMMSS.log`, where the prefix defaults to
+`session_` (`DEFAULT_PREFIX`) and comes from `SerialPanel.log_prefix()` via
+`set_prefix()` before each session. `sanitize_prefix()` strips path
+separators, the characters Windows reserves and control bytes, and caps the
+length at 64 — the UI blocks those at the keyboard with a validator, but the
+settings file is hand-editable, so the guarantee lives here. An empty prefix
+is fine: the timestamp is always appended, so the name can never be empty,
+`.` or `..`.
 
 `open_session()` opens the file **exclusively** (`"xb"`) and falls back to
 `session_..._2.log`, `_3.log`, … if the name is taken. The timestamp only has
@@ -212,6 +230,16 @@ Stdlib-only home for log-line format knowledge shared by `colorizer.py` and
 `<tag>` first, then a case-insensitive, word-boundary-anchored keyword scan
 (`error/err/fatal/critical` → `err`, `warning/warn` → `wrn`, `info/notice` →
 `inf`, `debug/dbg/trace` → `dbg`, checked in that priority order).
+
+Also home to the markers on the two kinds of line logulator generates rather
+than receives: `TX_PREFIX` (`">> "`), `MARK_PREFIX` (`">>>MARK"`),
+`format_mark(note, when=None)` and `is_generated(line)`. They live here
+because the colorizer and the minimap have to recognise them on the way back
+*in* — from a pane rebuild, or from a saved log reopened in the file viewer.
+The two do not collide: `">>>MARK"` fails `startswith(">> ")` on the third
+character. `format_mark` stamps UTC because a mark exists to be lined up with
+something outside the log — a bench instrument, a ticket, another machine —
+which rarely shares the operator's timezone.
 
 ### `app/ui/log_pane.py` — `LogPane`, `make_pane`, shared constants
 Shared `QTextEdit` subclass used by both `MainWindow` and `FileViewer`. Extracted
@@ -386,12 +414,21 @@ it), port `QComboBox` (items show `device — description` from
 `currentData()`, not `currentText()`, for the port), baud rate selector, a
 config summary button (shows e.g. `8-N-1`, full config in tooltip; opens
 `SerialConfigDialog`), Refresh button (preserves the current selection when
-the port is still present), Connect/Disconnect toggle, Auto-reconnect
-checkbox, and a Clear button. Last-used port and baud are persisted on
-connect (`AppSettings.last_port`/`last_baud`) and restored on launch when the
-port is present. Disables port/baud/config controls while connected. Clear
-button and Auto-reconnect checkbox are always enabled regardless of
-connection state. Font size moved to the settings sidebar.
+the port is still present), a `Log:` filename-prefix field,
+Connect/Disconnect toggle, Auto-reconnect checkbox, and a Clear button.
+Last-used port, baud and log prefix are persisted on connect
+(`AppSettings.last_port`/`last_baud`/`log_prefix`) and restored on launch when
+the port is present. Disables port/baud/config/prefix controls while
+connected. Clear button and Auto-reconnect checkbox are always enabled
+regardless of connection state. Font size moved to the settings sidebar.
+
+`log_prefix()` returns the sanitized prefix for this window's next session.
+`MainWindow._on_connect` reads it off the panel rather than `AppSettings`, so
+each window keeps its own — one can log `featureA_` while another logs
+`ulcplus_`; the setting only supplies the value the field starts out with. A
+`QRegularExpressionValidator` blocks path separators and Windows-reserved
+characters at the keyboard, which is friendlier than sanitizing behind the
+user's back; `LogWriter.sanitize_prefix` still runs, for the settings file.
 Emits `connect_requested(port, baud)`, `disconnect_requested()`,
 `clear_requested()`, and `auto_reconnect_changed(bool)`.
 `set_auto_reconnect(val)` / `auto_reconnect() -> bool` for external
@@ -404,6 +441,27 @@ when RTS/CTS flow control is selected — driver-managed). Reads current values
 from `AppSettings` on open, writes them back on OK. Changes apply on the next
 connect. Module also exports `config_summary(settings) -> str` (`"8-N-1"`)
 and `config_tooltip(settings) -> str` used by `SerialPanel`'s button.
+
+### `app/ui/mark_bar.py` — `MarkBar(QWidget)`
+Inline bar for injecting a MARK line into the session log, docked between the
+find bar and the send bar in `MainWindow`. Hidden until Ctrl+M or the
+`⚑ Mark` toolbar action; Escape dismisses it and emits `closed`, which
+unchecks the action. `Mark:` label, note input (Enter commits), `Add mark`
+button, close button. Emits `mark_requested(str)` — the note may be empty.
+
+Deliberately **not** a button on the send bar: a mark is recorded, never
+transmitted, and sharing one input with the send field would eventually put a
+note on the wire. The bar stays open after committing and just clears the
+field, because marking a run of test steps is the common case.
+
+`set_connected(bool)` greys the input. `MainWindow._on_mark` is gated on
+`_log_writer.current_path`, not on the worker: during an auto-reconnect gap
+there is no worker but the log is still open, and that is exactly when a mark
+("this is when I pulled power") is most worth having. It formats the line
+with `log_format.format_mark`, writes it via `LogWriter.write_record`, and
+echoes it through `_append_display_line` — so a mark is filtered, colored and
+given a minimap band like any other line, and is not counted in
+`_line_count` (RX only).
 
 ### `app/ui/send_bar.py` — `SendBar(QWidget)`
 Control keys pass straight through to the port: `Ctrl+A`–`Ctrl+Z` send
@@ -451,6 +509,12 @@ that default. Absolute by construction, so it no longer depends on the process
 working directory — the old relative `"logs"` meant a terminal launch and a
 desktop-launcher launch wrote to different places.
 
+`log_prefix() -> str` / `set_log_prefix(val: str)` — session log filename
+prefix, stored under `logging/prefix`, default `"session_"` (taken from
+`log_writer.DEFAULT_PREFIX` so there is one definition). Unlike `log_dir`, an
+empty value is **kept**: a bare timestamp is a valid name, not an unset. This
+only seeds the serial panel's field — see `SerialPanel.log_prefix()`.
+
 Escape sequences: `ansi_mode() -> str` / `set_ansi_mode(val: str)` —
 `'strip'`/`'render'`/`'off'`, stored under `display/ansi_mode`, default
 `'strip'`. Display only — the session log always records the bytes verbatim.
@@ -478,9 +542,13 @@ connect): `serial_databits()` (5–8, default 8), `serial_parity()`
 `serial/*`.
 
 TX (send): `tx_line_ending()` (`'none'/'lf'/'cr'/'crlf'`, default `'crlf'`,
-stored under `tx/line_ending`); `tx_color()` / `set_tx_color()` (default
-`#8be9fd`, stored under `color/tx`); `tx_echo_empty()` /
-`set_tx_echo_empty()` (bool, default `False`, stored under `tx/echo_empty`).
+stored under `tx/line_ending`); `tx_color()` / `set_tx_color()`;
+`tx_echo_empty()` / `set_tx_echo_empty()` (bool, default `False`, stored
+under `tx/echo_empty`).
+
+Marks: `mark_color()` / `set_mark_color()`. Both `tx_color` and `mark_color`
+are per-theme log colors — see the Theme section below for the storage
+layout and defaults (Dracula: TX `#8be9fd`, mark `#ff79c6`).
 
 `tx_echo_empty` controls only whether a bare Enter is echoed and logged — the
 line ending is transmitted either way, so the prompt-nudge still works. Off by
@@ -497,8 +565,31 @@ Font: `font_size()` / `set_font_size()` — validated against the size list
 (8–24), default 12, stored under `app/font_size`.
 
 Theme:
-- `theme() -> str` / `set_theme(val: str)` — `'dracula'` or `'vscode'`.
-  Stored under `app/theme`. Default `'dracula'`.
+- `theme() -> str` / `set_theme(val: str)` — any name from
+  `theme.theme_names()` (`'dracula'`, `'vscode'`, `'vscode-light'`,
+  `'solarized-light'`) **or** `'system'`. Stored under `app/theme`. Default
+  `'dracula'`.
+- `resolved_theme() -> str` — the palette to actually apply, with `'system'`
+  mapped through the OS. Everything needing a concrete theme goes through
+  here, **including the per-theme log-color namespace**: following the OS
+  from dark to light has to bring the light colors with it.
+- `system_dark_theme()` / `system_light_theme()` (+ setters) — the pair
+  `'system'` chooses between, stored under `app/system_dark` and
+  `app/system_light`, defaulting to `'dracula'` and `'vscode-light'`. Each
+  validates polarity, so a light theme cannot be stored as the dark partner.
+
+Log colors are stored **per theme** under `color/<theme>/<key>` via the
+private `_log_color()` / `_set_log_color()` pair, which every level, syntax,
+TX and mark accessor goes through. Defaults come from
+`theme.log_default(theme, key)`, so `AppSettings` holds no color constants of
+its own. A color chosen against a dark pane is meaningless on a light one, so
+overrides do not follow the user across a theme switch.
+
+`_migrate_log_colors()` runs once from `__init__`, guarded by
+`color/per_theme_migrated`: colors stored under the old theme-agnostic
+`color/<key>` move into whichever theme was active, and the old keys are
+removed. Without it, adding light themes would silently discard every
+customization anyone had made.
 
 ### `app/colorizer.py` — `Colorizer`, `detect_level`
 Reads settings from `AppSettings` and converts a log line string into a list
@@ -533,24 +624,39 @@ The `Colorizer` instance is owned by the window that created it and reads live
 settings on every call so color changes apply immediately on the next line or
 rebuild.
 
-Lines starting with `>> ` (the TX echo/log marker) are colored with the
-configurable TX color in BOTH modes, checked before any other parsing — so
-sent lines stand out live, survive pane rebuilds, and colorize when a saved
-session log is opened in the file viewer.
+Lines logulator generated rather than received are colored before any other
+parsing, in BOTH modes: `>>>MARK` takes the mark color and `>> ` the TX
+color. Checking them first is what keeps a mark whose note happens to mention
+"error", or to quote a whole Zephyr line, from being repainted or split into
+syntax segments. They stand out live, survive pane rebuilds, and colorize
+when a saved session log is opened in the file viewer.
 
-Default colors (Dracula-inspired palette):
+Default colors are per theme and live in `app/theme.py` — see its
+`_LOG_DEFAULTS`. For the two dark themes (unchanged from before light themes
+were added):
 - `<err>` → `#ff5555`, `<wrn>` → `#ffb86c`, `<inf>` → `#50fa7b`,
   `<dbg>` → `#888888`
 - Timestamp → `#666666`, Module → `#bd93f9`, Message body → `#f8f8f2`
-- TX lines (`>> `) → `#8be9fd`
+- TX lines (`>> `) → `#8be9fd`, marks (`>>>MARK`) → `#ff79c6`
 
 ### `app/ui/settings_sidebar.py` — `SettingsSidebar(QWidget)`
 Fixed-width (280 px) collapsible panel shown on the right side of
 `MainWindow`. Contains:
 
-- **Appearance:** theme dropdown ("Dracula" / "VS Code Dark"). Emits
-  `theme_changed(str)` with the internal key (`'dracula'`/`'vscode'`).
-  Change takes effect immediately via `apply_palette` — no restart needed.
+- **Appearance:** theme dropdown ("System" / "Dracula" / "VS Code Dark" /
+  "VS Code Light" / "Solarized Light"). Emits `theme_changed(str)` with a
+  **concrete** key — `AppSettings.resolved_theme()`, never the `'system'`
+  sentinel, since receivers apply a palette. Choosing "System" reveals two
+  indented sub-combos ("When dark:" / "When light:") selecting the partner
+  pair; each list only offers themes of the right polarity. Change takes
+  effect immediately via `apply_palette` — no restart needed.
+  `restyle()` re-applies everything baked into a stylesheet at build time —
+  the colour swatches (log colours are per theme, so every picker shows a
+  different value afterwards) and the section/subsection headings;
+  `LogWindowMixin._apply_theme` calls it. Both heading levels use
+  `header_text`, taking their hierarchy from size and the section rule rather
+  than a second colour: when only the subsections named a colour, the two
+  disagreed *and* the subsections kept the start-up theme's grey forever.
   Also a font size dropdown (8–24 pt, persisted via `AppSettings.font_size`,
   default 12) emitting `font_size_changed(int)` — both `MainWindow` and
   `FileViewer` (via its settings dialog) connect it to resize pane fonts live.
@@ -565,9 +671,11 @@ cap goes through `MainWindow._instances` instead, since file viewers keep
   the colorizer sees. Emits `settings_changed()`.
 - **Display / Colorization:** enable checkbox, mode selector (Level/Syntax),
   apply-to selector (All panes / Raw log only / Filtered log only / None),
-  and color-picker rows for all eight configurable colors (four levels, three
-  syntax fields, TX lines). Each color row shows a live swatch; clicking `…`
-  opens `QColorDialog`. Emits `settings_changed()` on any change.
+  and color-picker rows for all nine configurable colors (four levels, three
+  syntax fields, TX lines under "Sent data", mark lines under "Marks"). Each
+  color row shows a live swatch; clicking `…` opens `QColorDialog`. Emits
+  `settings_changed()` on any change. The colors apply to the **current
+  theme only** — see `AppSettings`'s per-theme storage.
 - **Minimap:** "Show minimap" checkbox (`AppSettings.minimap_enabled`,
   default off) and an apply-to combo (Both panes / Raw only / Filtered only —
   `AppSettings.minimap_apply_to`, default Raw only). Both emit
@@ -801,26 +909,32 @@ a deliberate settings change, not per line.
 Composes all panels. Key behaviors:
 
 **Layout:** Toolbar at top with `New Window` (spawns a new `MainWindow` via
-`open_new()`), `▽ Filter` (checkable, toggles `FilterBar` input row), and
+`open_new()`), `▽ Filter` (checkable, toggles `FilterBar` input row),
+`⚑ Mark` (checkable, toggles `MarkBar`; disabled until connected), and
 `⚙ Settings` (checkable, toggles sidebar). Central widget
 uses `QHBoxLayout`: left side holds `SerialPanel`, then the vertical splitter
 (stretch=1) — `FilterBar` lives inside the splitter, above the filtered pane
-(see Pane headers below) — then `FindBar` (hidden until Ctrl+F), then
-`SendBar`; right side is `SettingsSidebar`
+(see Pane headers below) — then `FindBar` (hidden until Ctrl+F), `MarkBar`
+(hidden until Ctrl+M), then `SendBar`; right side is `SettingsSidebar`
 (fixed 280 px, hidden when collapsed). Menu bar has a `File` menu with
 `New Window` (Ctrl+N), `Open Log File…` (Ctrl+O), a `Recent Files` submenu
 (last 10 paths, greyed out if the file no longer exists), and a `Help` menu
 with `About Logulator`. Shortcuts: `Ctrl+Shift+F` toggles the filter input
-row, `Ctrl+,` toggles the settings sidebar, `Ctrl+F` opens the find bar
-(all mapped to Cmd on macOS).
+row, `Ctrl+,` toggles the settings sidebar, `Ctrl+F` opens the find bar,
+`Ctrl+M` opens the mark bar (all mapped to Cmd on macOS).
 Window geometry and splitter state are saved to `AppSettings` on close and
 restored on startup.
 
 **Pane headers:** both panes are wrapped via `pane_with_header` — "Raw" and
 "Filtered — N of M lines" (updated on rebuild, clear, and the 1 s status
 timer). The filtered **container** (`_filtered_box`) is what gets
-shown/hidden, not the pane widget. The raw pane shows a placeholder hint
-before first connect; the filtered pane shows "No lines match…". `FilterBar`
+shown/hidden, not the pane widget. The raw pane shows `_RAW_PANE_HINT` while
+it is empty **and** no session is running: Qt shows a placeholder whenever the
+document is empty, so "press Connect" used to sit there through a live
+session until the first byte happened to arrive, reading as a connection that
+had not started. `_on_connect` clears it and `_on_disconnect` restores it,
+which also brings it back after a Clear while disconnected. The filtered pane
+shows "No lines match…". `FilterBar`
 is inserted into the filtered container's layout (index 1, between the
 header label and the pane) — see "Filter bar" below.
 
@@ -885,7 +999,8 @@ placed beside its pane via `pane_with_header`'s `side_widget` param. Optional
 and off by default — gated by `AppSettings.minimap_enabled`/`minimap_apply_to`
 (Settings sidebar's "Minimap" subsection) via `_apply_minimap_settings()`,
 called from `_on_settings_changed()` and once at startup. `_minimap_color_for(line)`
-maps a line to severity color (TX color for `>> ` lines, grey for `---`
+maps a line to severity color (mark color for `>>>MARK` lines, checked first;
+TX color for `>> ` lines, grey for `---`
 separators, `AppSettings.level_color()` via `colorizer.detect_level()`
 otherwise, or a neutral grey if no level is detected) — independent of
 whether colorization itself is on or in level/syntax mode. Colors are
@@ -947,11 +1062,40 @@ display. `closeEvent` saves geometry/splitter state, then calls
 
 ### `app/theme.py` — `apply_palette`
 Applies the Fusion Qt style and a named `QPalette` to the `QApplication`.
-Two themes are available; both are applied on all platforms.
+Four themes are available — two dark, two light — applied on all platforms.
+Settings-free by design: `AppSettings` reads defaults from here, never the
+reverse, so `active_colors()` works in any widget without one.
 
-`apply_palette(app, theme)` — dispatch entry point. `theme` is `'dracula'`
-or `'vscode'`; falls back to Dracula for unknown values. It also records the
-active theme so `active_colors()` works without an `AppSettings` instance.
+`apply_palette(app, theme)` — dispatch entry point. `theme` must be a
+concrete name from `theme_names()`; falls back to Dracula for unknown
+values. It records the active theme so `active_colors()` works without an
+`AppSettings` instance, and sets `_applied`, which `palette_applied()`
+exposes. That flag exists because `_active_theme` starts out as `'dracula'`
+before anything has been applied — without it, a caller that skips redundant
+applies would skip the very first one.
+
+The four builders share one `_build()`; they differed only in their tones.
+
+**Following the OS.** `SYSTEM` (`'system'`) is a *mode*, not a palette.
+`resolve_theme(key, dark, light)` maps it to one of the two partners via
+`system_is_dark()`, which reads `QStyleHints.colorScheme()` — `Unknown`
+(platforms with no such notion, and the offscreen plugin used in tests) is
+treated as dark. The partner pair is passed in rather than read, so this
+module keeps knowing nothing about `AppSettings`;
+`AppSettings.resolved_theme()` supplies it. `main.py` connects
+`colorSchemeChanged` to `retheme_all_windows`, so a sunset switch lands
+without a restart.
+
+**Per-theme log colors.** `_LOG_DEFAULTS` holds the *starting* log colors
+per theme — `level_err/wrn/inf/dbg`, `syntax_timestamp/module/message`, `tx`,
+`mark` — reached via `log_defaults(theme)` / `log_default(theme, key)`. These
+cannot be shared across themes: the dark set puts near-white `#f8f8f2`
+message text on a white pane. The two dark themes deliberately share the
+original palette, since adding light themes must not restyle what existing
+users already see. Solarized Light keeps its published accent colors even
+though they sit near 4:1 contrast — that scheme is low-contrast by design and
+every value here is only a default — with `level_dbg` nudged from base1 to
+base0, which was 2.5:1.
 
 **Semantic colors.** `QPalette` does not cover log-pane chrome, minimap bands,
 inline error fields or filter chips, so `_THEME_COLORS` defines those per
@@ -963,13 +1107,20 @@ is what made the old values (all tuned for Dracula) stay put under VS Code
 Dark.
 
 Because those values are baked into stylesheets and `QTextCharFormat`s at
-build time, a live switch has to re-apply them: `LogWindowMixin._on_theme_changed`
-calls `apply_palette` then `_apply_theme()` on every open window, which
-restyles the panes, headers, minimaps, filter bar and find bar and rebuilds
-the panes so existing lines pick up the new `plain_text`. Widgets that carry
+build time, a live switch has to re-apply them: `log_window.retheme_all_windows`
+(which `LogWindowMixin._on_theme_changed` delegates to) calls `apply_palette`
+then `_apply_theme()` on every open window, which restyles the panes,
+headers, minimaps, filter bar and find bar, refreshes the settings sidebar's
+color swatches, and rebuilds the panes so existing lines pick up the new
+`plain_text` **and the new theme's log colors**. Widgets that carry
 theme-derived styling expose a `restyle()` for this. Transient states (the
 find bar's no-match field, the filter bar's invalid-regex field) are
 re-applied too, so they don't keep the previous theme's red.
+
+`retheme_all_windows` no-ops when the resolved theme has not actually
+changed — it is also the entry point for the OS `colorSchemeChanged` signal,
+which fires regardless of whether the app is following the OS, and rebuilding
+every pane for an unchanged theme is pure waste.
 
 **Dracula** (`'dracula'`): window/panel bg `#282a36`, input bg `#21222c`,
 buttons/surfaces `#44475a`, primary text `#f8f8f2`, disabled text `#6272a4`,
@@ -979,19 +1130,31 @@ selection `#1a5fa8`, links `#8be9fd`.
 `#1e1e1e`, buttons/surfaces `#3a3d41`, primary text `#d4d4d4`, disabled
 text `#858585`, selection `#264f78`, links `#4fc1ff`.
 
-Both themes set disabled-state colors separately via `QPalette.ColorGroup.Disabled`
-and configure the Fusion 3-D shading roles (`Light`/`Midlight`/`Mid`/`Dark`/`Shadow`)
-for button bevels. Log pane backgrounds and selection colors follow
-`QPalette.Base` / `QPalette.Highlight` so they update automatically when the
-theme switches — Dracula panes use `#21222c`, VS Code panes use `#1e1e1e`.
+**VS Code Light+** (`'vscode-light'`): window/panel bg `#f3f3f3`, pane bg
+`#ffffff`, buttons `#e4e4e4`, primary text `#333333`, selection `#add6ff`.
+
+**Solarized Light** (`'solarized-light'`): window/panel bg `#eee8d5` (base2),
+pane bg `#fdf6e3` (base3), buttons `#e0dac4`, primary text `#586e75`
+(base01). Selection is `#c9dce8` rather than Solarized's own base2-on-base3,
+which is nearly invisible in a log pane.
+
+Every theme sets disabled-state colors separately via
+`QPalette.ColorGroup.Disabled` and configures the Fusion 3-D shading roles
+(`Light`/`Midlight`/`Mid`/`Dark`/`Shadow`) for button bevels — Qt derives
+those badly from a saturated surface color. Log pane backgrounds and
+selection colors follow `QPalette.Base` / `QPalette.Highlight` so they update
+automatically when the theme switches.
 
 ### `main.py`
 `QApplication` entry point. Run with `.venv/bin/python main.py`. Loads
 `icon.png` from the repo root (if present) and sets it as the app icon via
-`QIcon`. Reads the persisted theme key directly from `QSettings` (before
-`MainWindow` is constructed) and calls `apply_palette(app, theme)` so the
-Fusion style and palette are applied before any widgets are created.
-`MainWindow` handles live theme switching via `SettingsSidebar.theme_changed`.
+`QIcon`. Builds an `AppSettings` and calls
+`apply_palette(app, settings.resolved_theme())` before `MainWindow` is
+constructed, so nothing is built with the wrong palette and then repainted.
+Also connects `QStyleHints.colorSchemeChanged` to `retheme_all_windows`, so
+the "System" theme follows the OS live rather than waiting for a restart.
+`MainWindow` handles user-driven theme switching via
+`SettingsSidebar.theme_changed`.
 
 ## Supported Log Formats
 
@@ -1096,8 +1259,20 @@ All core features working:
 - File viewer Follow mode: "Follow" toolbar toggle tails live-appended content
   via `QFileSystemWatcher`; scrolling up pauses following with a "⬇ Resume"
   button; scrolling back to bottom resumes automatically
-- User-selectable app theme (Dracula / VS Code Dark) in the settings sidebar
-  Appearance section; persisted via `AppSettings`; switches live without restart
+- User-selectable app theme in the settings sidebar Appearance section:
+  Dracula, VS Code Dark, VS Code Light, Solarized Light, or System (follows
+  the OS light/dark setting live, between a selectable dark/light pair);
+  persisted via `AppSettings`; switches live without restart. Log colors are
+  stored per theme, with defaults tuned per background, so a light theme is
+  readable out of the box and a customization made against a dark pane does
+  not follow you onto a light one
+- Configurable session-log filename prefix (`Log:` field in the serial panel,
+  per window): `featureA_20260801_143012.log` instead of `session_…`
+- MARK lines (Ctrl+M or the `⚑ Mark` toolbar button): records
+  `>>>MARK - <utc>: note` in the session log and the display, for noting
+  events that happen outside the log — pulling power, swapping an antenna,
+  starting a test step. Own configurable color; available whenever a session
+  log is open, including during an auto-reconnect gap
 - UX round (2026-07): last-used port/baud persisted and restored; port
   dropdown shows device descriptions; connection status dot (grey/green/amber);
   keyboard shortcuts (Ctrl+N new window, Ctrl+Shift+F filter, Ctrl+, settings,

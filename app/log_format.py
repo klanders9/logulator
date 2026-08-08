@@ -9,9 +9,18 @@ matched only an explicit `<tag>`, so a line shown in red was not matched by a
 """
 
 import re
+from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
 LEVELS = ("dbg", "inf", "wrn", "err")
+
+# Markers on the two kinds of line logulator generates itself, as opposed to
+# receiving. Both are recorded in the session log and echoed to the display,
+# so the colorizer and the minimap have to recognise them on the way back in —
+# from a live pane rebuild or from a saved log reopened in the file viewer.
+# ">>>MARK" does not collide with ">> ": the third character differs.
+TX_PREFIX = ">> "
+MARK_PREFIX = ">>>MARK"
 
 # Zephyr severity tag, e.g. "<inf>".
 LEVEL_TAG_RE = re.compile(r"<(dbg|inf|wrn|err)>")
@@ -55,3 +64,24 @@ def module_of(line: str) -> Optional[str]:
     """Return the module field of a Zephyr-style line, or None."""
     m = MODULE_RE.search(line)
     return m.group(1) if m else None
+
+
+def format_mark(note: str, when: Optional[datetime] = None) -> str:
+    """Render a user mark: '>>>MARK - 2026-08-01T14:23:45Z: note'.
+
+    The timestamp is UTC because a mark exists to be lined up with something
+    outside the log — a bench instrument, a ticket, another machine's log —
+    and those rarely share the operator's timezone. An empty note leaves just
+    the marker and the time, which is still a usable landmark.
+    """
+    when = when if when is not None else datetime.now(timezone.utc)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    stamp = when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    note = note.strip()
+    return f"{MARK_PREFIX} - {stamp}: {note}" if note else f"{MARK_PREFIX} - {stamp}"
+
+
+def is_generated(line: str) -> bool:
+    """Whether a line was written by logulator rather than received."""
+    return line.startswith(TX_PREFIX) or line.startswith(MARK_PREFIX)

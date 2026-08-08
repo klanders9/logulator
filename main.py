@@ -6,12 +6,13 @@
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QSettings
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from app.main_window import MainWindow
+from app.settings import AppSettings
 from app.theme import apply_palette
+from app.ui.log_window import retheme_all_windows
 
 
 def main():
@@ -19,11 +20,16 @@ def main():
     app.setApplicationName("logulator")
     app.setDesktopFileName("logulator")
 
-    _qs = QSettings("logulator", "logulator")
-    _theme = _qs.value("app/theme", "dracula")
-    if _theme not in ("dracula", "vscode"):
-        _theme = "dracula"
-    apply_palette(app, _theme)
+    # Applied before any widget exists, so nothing is built with the wrong
+    # palette and then repainted.
+    settings = AppSettings()
+    apply_palette(app, settings.resolved_theme())
+
+    # Under the "System" theme the OS can flip out from under us — at sunset,
+    # or on a manual toggle — so follow it rather than waiting for a restart.
+    app.styleHints().colorSchemeChanged.connect(
+        lambda _scheme: retheme_all_windows(settings.resolved_theme())
+    )
 
     icon_path = Path(__file__).parent / "icon.png"
     if icon_path.exists():

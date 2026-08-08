@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.log_format import format_mark
 from app.log_writer import LogWriter
 from app.serial_worker import SerialWorker
 from app.settings import AppSettings
@@ -30,9 +31,18 @@ from app.ui.find_bar import FindBar
 from app.ui.find_controller import FindController
 from app.ui.log_pane import _fmt
 from app.ui.log_window import LogWindowMixin
+from app.ui.mark_bar import MarkBar
 from app.ui.send_bar import SendBar
 from app.ui.serial_panel import SerialPanel
 from app.ui.settings_sidebar import SettingsSidebar
+
+
+# Shown in the raw pane while it is empty *and* no session is running. Qt
+# shows a placeholder whenever the document is empty, which during a live
+# session means it sits there telling the user to press Connect until the
+# first byte happens to arrive. _on_connect clears it and _on_disconnect puts
+# it back, so it only ever appears when it is actually the next thing to do.
+_RAW_PANE_HINT = "Select a port and press Connect — or drop a .log file here."
 
 
 def _reveal_in_file_manager(path: Path) -> None:
@@ -88,9 +98,7 @@ class MainWindow(LogWindowMixin, QMainWindow):
         self._build_log_panes(
             font,
             cap=self._settings.buffer_cap(),
-            raw_placeholder=(
-                "Select a port and press Connect — or drop a .log file here."
-            ),
+            raw_placeholder=_RAW_PANE_HINT,
             filtered_placeholder="No lines match the active filters.",
         )
 
@@ -98,6 +106,8 @@ class MainWindow(LogWindowMixin, QMainWindow):
         self._send_bar = SendBar(self._settings)
         self._find_bar = FindBar()
         self._find = FindController(self._find_bar, self._raw_pane, self)
+        self._mark_bar = MarkBar()
+        self._mark_bar.set_connected(False)
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
@@ -106,6 +116,7 @@ class MainWindow(LogWindowMixin, QMainWindow):
         left_layout.addWidget(self._serial_panel)
         left_layout.addWidget(self._splitter, stretch=1)
         left_layout.addWidget(self._find_bar)
+        left_layout.addWidget(self._mark_bar)
         left_layout.addWidget(self._send_bar)
 
         self._sidebar = SettingsSidebar(self._settings)
@@ -151,6 +162,15 @@ class MainWindow(LogWindowMixin, QMainWindow):
         self._filter_action.setChecked(False)
         self._filter_action.setShortcut(QKeySequence("Ctrl+Shift+F"))
         self._filter_action.toggled.connect(self._on_filter_action_toggled)
+        self._mark_action = toolbar.addAction("⚑ Mark")
+        self._mark_action.setCheckable(True)
+        self._mark_action.setChecked(False)
+        self._mark_action.setShortcut(QKeySequence("Ctrl+M"))
+        self._mark_action.setToolTip(
+            "Record a >>>MARK line in the session log (Ctrl+M)"
+        )
+        self._mark_action.setEnabled(False)  # nothing to mark until connected
+        self._mark_action.toggled.connect(self._on_mark_action_toggled)
         self._settings_action = toolbar.addAction("⚙  Settings")
         self._settings_action.setCheckable(True)
         self._settings_action.setChecked(self._settings.sidebar_open())
@@ -190,6 +210,10 @@ class MainWindow(LogWindowMixin, QMainWindow):
         self._sidebar.buffer_cap_changed.connect(self._on_buffer_cap_changed)
         self._sidebar.font_size_changed.connect(self._on_font_size_changed)
         self._find_bar.filter_to_matches.connect(self._on_filter_to_matches)
+        self._mark_bar.mark_requested.connect(self._on_mark)
+        self._mark_bar.closed.connect(
+            lambda: self._mark_action.setChecked(False)
+        )
 
         # Restore geometry
         geometry = self._settings.load_geometry()
@@ -231,6 +255,9 @@ class MainWindow(LogWindowMixin, QMainWindow):
         # the source of truth, so a silent unlogged session is worse than none.
         log_dir = self._settings.log_dir()
         self._log_writer.set_log_dir(log_dir)
+        # Read off the panel rather than settings so each window keeps its own
+        # prefix; settings only supplies the value the field starts out with.
+        self._log_writer.set_prefix(self._serial_panel.log_prefix())
         try:
             self._log_writer.open_session()
         except OSError as exc:
@@ -246,6 +273,9 @@ class MainWindow(LogWindowMixin, QMainWindow):
         self._connect_time = datetime.now()
         path = self._log_writer.current_path
         self._status_log.setText(f"Log: {path.name}" if path else "Log: unknown")
+        # The session has started; "press Connect" is no longer the next step,
+        # even though no bytes have arrived to fill the pane yet.
+        self._raw_pane.setPlaceholderText("")
 
         self._worker = SerialWorker(port, baud, self._log_writer, self._reconnect_options)
         self._worker.new_line.connect(self._on_new_line)
@@ -255,6 +285,8 @@ class MainWindow(LogWindowMixin, QMainWindow):
         self._worker.start()
         self._serial_panel.set_connected(True)
         self._send_bar.set_connected(True)
+        self._mark_bar.set_connected(True)
+        self._mark_action.setEnabled(True)
         self._set_status_log_clickable(True)
         self._timer.start()
 
@@ -273,9 +305,12 @@ class MainWindow(LogWindowMixin, QMainWindow):
         self._connect_time = None
         self._serial_panel.set_connected(False)
         self._send_bar.set_connected(False)
+        self._mark_bar.set_connected(False)
+        self._mark_action.setEnabled(False)
         self._set_status_log_clickable(False)
         self._status_log.setText("Not connected")
         self._status_stats.setText("")
+        self._raw_pane.setPlaceholderText(_RAW_PANE_HINT)
 
         if prompt_clear:
             reply = QMessageBox.question(
@@ -373,6 +408,30 @@ class MainWindow(LogWindowMixin, QMainWindow):
         session file captures both directions of the conversation."""
         self._log_writer.write_tx_line(text)
         self._append_display_line(">> " + text)
+
+    # ------------------------------------------------------------------
+    # Marks
+    # ------------------------------------------------------------------
+
+    def _on_mark_action_toggled(self, checked: bool) -> None:
+        if checked:
+            self._mark_bar.show_and_focus()
+        else:
+            self._mark_bar.setVisible(False)
+
+    def _on_mark(self, note: str) -> None:
+        """Record a user mark noting an event outside the log.
+
+        Gated on the session log rather than the worker: during an
+        auto-reconnect gap there is no worker, but the log is still open and
+        that is exactly when a mark ('this is when I pulled power') is most
+        worth having.
+        """
+        if self._log_writer.current_path is None:
+            return
+        line = format_mark(note)
+        self._log_writer.write_record(line)
+        self._append_display_line(line)
 
     # ------------------------------------------------------------------
     # Incoming data

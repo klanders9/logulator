@@ -6,7 +6,13 @@ from typing import List, Tuple
 
 from PySide6.QtGui import QColor, QTextCharFormat
 
-from app.log_format import LEVEL_TAG_RE, detect_level, keyword_level
+from app.log_format import (
+    LEVEL_TAG_RE,
+    MARK_PREFIX,
+    TX_PREFIX,
+    detect_level,
+    keyword_level,
+)
 from app.settings import AppSettings
 from app.theme import active_colors
 
@@ -49,10 +55,12 @@ class Colorizer:
         self._s = settings
 
     def colorize(self, line: str) -> List[Tuple[str, QTextCharFormat]]:
-        # Sent (TX) lines are echoed into the display and session log with a
-        # '>> ' marker; color them distinctly in both modes so they stand out
-        # and survive pane rebuilds / file-viewer loads.
-        if line.startswith(">> "):
+        # Lines logulator generated rather than received — TX echoes and user
+        # marks — are colored distinctly in both modes, before any parsing, so
+        # they stand out live and survive pane rebuilds / file-viewer loads.
+        if line.startswith(MARK_PREFIX):
+            return [(line, _fmt(self._s.mark_color()))]
+        if line.startswith(TX_PREFIX):
             return [(line, _fmt(self._s.tx_color()))]
         if self._s.color_mode() == "syntax":
             return self._syntax(line)
